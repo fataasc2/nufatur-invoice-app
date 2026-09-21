@@ -1,0 +1,537 @@
+Buat aplikasi web/PWA full-stack internal bernama:
+
+NUFATUR INVOICE APP
+
+Untuk PT Nurul Fajar Abinaya (NUFATUR).
+
+PENTING:
+Ini aplikasi internal perusahaan, bukan aplikasi publik.
+Prioritaskan FUNGSI, KEMUDAHAN, STABILITAS, dan OUTPUT PDF.
+Jangan over-engineer dan jangan membuat UI terlalu ramai.
+
+Gunakan database persisten + authentication aman + responsive mobile-first + PWA.
+Gunakan Replit Database dan Replit Auth jika sesuai.
+Jangan gunakan localStorage sebagai database utama.
+Semua tombol utama harus benar-benar berfungsi, bukan mockup.
+
+==================================================
+DATA PERUSAHAAN
+==================================================
+
+Nama:
+PT Nurul Fajar Abinaya
+
+Brand:
+NUFATUR
+
+Alamat:
+Jl. Raden Saleh, Sukmajaya,
+Kec. Sukmajaya, Kota Depok,
+Jawa Barat 16412
+
+WhatsApp:
+081220744334
+
+Email:
+nufaturtravel@gmail.com
+
+Website:
+nufaturfamily.com
+
+Bank:
+Bank Syariah Indonesia (BSI)
+
+No. Rekening:
+7133264765
+
+Nama Rekening:
+PT Nurul Fajar Abinaya (NUFATUR)
+
+Sediakan Pengaturan agar data perusahaan, logo, rekening, dan tanda tangan dapat diedit.
+
+==================================================
+LOGIN
+==================================================
+
+Buat login internal yang aman.
+
+Gunakan authentication yang benar.
+Jangan menyimpan password plaintext.
+
+Akun awal:
+Username: nufatur
+Password awal: bismillah827
+
+Cukup satu akun utama untuk versi pertama, tetapi struktur siap dikembangkan menjadi Owner/Admin/Staff.
+
+==================================================
+MENU UTAMA
+==================================================
+
+Buat menu sederhana:
+
+🏠 Beranda
+🧾 Invoice
+💰 Pembayaran
+📄 Kuitansi
+⚙️ Pengaturan
+
+Desktop menggunakan sidebar sederhana.
+Mobile menggunakan navigasi yang mudah dipahami.
+
+==================================================
+DASHBOARD
+==================================================
+
+Tampilkan:
+
+Total Invoice
+Belum Lunas
+Jatuh Tempo
+Sudah Lunas
+
+Total Tagihan
+Total Terbayar
+Total Sisa
+
+Tombol besar:
++ BUAT INVOICE
+LIHAT SEMUA INVOICE
+
+Jangan membuat dashboard penuh grafik atau informasi tidak penting.
+
+==================================================
+INVOICE
+==================================================
+
+Fitur:
+- Buat
+- Lihat
+- Edit
+- Hapus
+- Search
+- Filter
+- Detail
+- PDF
+- Print
+
+Filter:
+Semua
+Belum Lunas
+Lunas
+Jatuh Tempo
+Draft
+Dibatalkan
+
+Nomor otomatis:
+
+INV/NUF/YYYY/MM/001
+
+Nomor berikutnya otomatis bertambah tetapi tetap dapat diedit manual.
+
+Form invoice:
+
+- Nomor Invoice
+- Tanggal
+- Due Date
+- Reference
+- Jenis Customer
+- Nama Customer/Perusahaan
+- WhatsApp
+- Email
+- Alamat
+- Catatan
+
+Detail invoice berupa tabel dinamis:
+
+No
+Description
+Flight
+Keterangan
+Date
+Qty/Pax
+Price
+Amount
+
+Bisa:
++ Tambah Item
+Edit
+Hapus
+Ubah urutan
+
+Amount otomatis Qty × Price.
+
+Jika Qty kosong, tetap bisa memasukkan nominal manual.
+
+Tambahkan:
+Subtotal
+Discount optional
+Additional Cost optional
+Tax optional
+TOTAL INVOICE
+
+==================================================
+FLIGHT
+==================================================
+
+Flight OPTIONAL.
+
+Jika digunakan:
+Maskapai
+Nomor Flight
+Tanggal
+Origin
+Destination
+Jam Berangkat
+Jam Tiba
+Keterangan
+
+Jika tidak digunakan, jangan tampilkan.
+
+==================================================
+PEMBAYARAN
+==================================================
+
+Setiap invoice memiliki Payment History.
+
+Tombol:
++ TAMBAH PEMBAYARAN
+
+Field:
+Tanggal
+Deskripsi
+Nominal
+Bank
+Metode Pembayaran
+Keterangan
+
+Metode:
+Transfer
+Cash
+QRIS
+Lainnya
+
+Hitung otomatis:
+
+Total Invoice
+Total Pembayaran
+Sisa Pembayaran
+
+Status otomatis:
+
+Payment = 0 → BELUM LUNAS
+Payment < Invoice → BELUM LUNAS
+Payment >= Invoice → LUNAS
+Due Date lewat + belum lunas → JATUH TEMPO
+
+Jangan menentukan status lunas hanya berdasarkan tombol manual.
+
+==================================================
+KUITANSI
+==================================================
+
+Kuitansi dibuat dari payment.
+
+Flow:
+
+Invoice
+→ pilih pembayaran
+→ Buat Kuitansi
+→ Preview
+→ Download PDF / Print
+
+Nomor otomatis:
+
+KWT/NUF/YYYY/MM/001
+
+Nomor otomatis bertambah tetapi dapat diedit manual.
+
+Isi kuitansi:
+
+Nomor Kuitansi
+Tanggal
+Telah diterima dari
+Nominal
+Terbilang
+Untuk pembayaran
+Nomor Invoice
+Metode Pembayaran
+Bank
+Catatan
+Nama Perusahaan
+Tanda Tangan
+
+Buat fungsi TERBILANG Bahasa Indonesia otomatis.
+
+Contoh:
+Rp10.000.000
+→ Sepuluh Juta Rupiah
+
+==================================================
+PDF — SANGAT PENTING
+==================================================
+
+Invoice dan kuitansi wajib dapat:
+
+Preview
+Download PDF
+Print
+
+Ukuran A4 Portrait.
+
+PDF harus benar-benar berupa dokumen A4 profesional, bukan screenshot website.
+
+Gunakan struktur PDF invoice referensi yang saya berikan sebagai acuan visual.
+
+Kurang lebih:
+
+HEADER
+Logo NUFATUR
+PT Nurul Fajar Abinaya
+Alamat
+WhatsApp
+Email
+Website
+
+Sebelah kanan:
+INVOICE
+Invoice Date
+Invoice Number
+Reference
+
+BILL TO
+Customer
+
+DUE DATE
+
+DETAIL INVOICE:
+DESCRIPTION
+FARE / PRICE
+QTY
+ISSUE / KETERANGAN
+TOTAL AMOUNT
+
+TOTAL INVOICE
+
+PAYMENT DETAIL:
+DESCRIPTION
+FARE
+QTY
+DATE
+BANK
+TOTAL AMOUNT
+
+TOTAL PAYMENT
+REMAINING BALANCE
+STATUS
+
+PEMBAYARAN MELALUI
+Rekening NUFATUR
+
+KONFIRMASI PEMBAYARAN
+081220744334
+
+CATATAN / PERHATIAN
+
+SIGNATURE jika diaktifkan.
+
+Tampilan PDF harus rapi, sederhana, profesional dan kurang lebih seperti referensi yang saya upload.
+
+PENTING:
+PDF referensi hanya sebagai contoh struktur/layout.
+JANGAN menyalin logo, nama, alamat, rekening, kontak, atau identitas perusahaan dari referensi.
+Gunakan identitas NUFATUR.
+
+Jika invoice panjang, otomatis lanjut ke halaman berikutnya dan ulangi header tabel.
+
+==================================================
+PENGATURAN
+==================================================
+
+Buat:
+
+Data Perusahaan
+Logo
+Template Invoice
+Template Kuitansi
+Rekening Bank
+Nomor Invoice
+Nomor Kuitansi
+Tanda Tangan
+Backup / Export
+
+Template tidak perlu seperti Canva.
+
+Cukup pengaturan sederhana untuk:
+- Logo
+- Data perusahaan
+- Judul
+- Label kolom
+- Kolom tampil/sembunyi
+- Footer
+- Catatan
+- Rekening
+- Tanda tangan
+
+==================================================
+RIWAYAT PEMBAYARAN
+==================================================
+
+Halaman Pembayaran:
+
+Tanggal
+Customer
+Invoice
+Deskripsi
+Bank
+Nominal
+Kuitansi
+
+Search + filter tanggal.
+
+==================================================
+DATABASE
+==================================================
+
+Gunakan database persisten dengan relasi:
+
+users
+company_settings
+bank_accounts
+customers
+invoices
+invoice_items
+payments
+receipts
+invoice_templates
+receipt_templates
+audit_logs
+
+Relasi:
+Customer → banyak Invoice
+Invoice → banyak Invoice Items
+Invoice → banyak Payments
+Payment → dapat menghasilkan Receipt
+
+Data harus tetap ada setelah refresh, logout/login, dan dibuka dari perangkat lain.
+
+==================================================
+BACKUP
+==================================================
+
+Sediakan export data jika memungkinkan:
+
+Invoice
+Payment
+CSV/Excel
+
+==================================================
+DESAIN
+==================================================
+
+Tampilan biasa saja.
+
+Clean
+Professional
+Corporate
+Modern
+Senior-friendly
+
+Warna:
+Navy / dark blue
+Blue
+Teal / green
+White
+
+Gunakan font minimal 16px.
+Tombol besar.
+Icon + teks.
+Bahasa Indonesia sederhana.
+Tidak banyak animasi.
+Tidak banyak menu.
+Jangan seperti aplikasi trading/crypto/fintech.
+
+==================================================
+PWA
+==================================================
+
+Buat PWA yang responsive dan dapat di-install ke Home Screen Android/iPhone.
+
+Target:
+iPhone
+Android
+Samsung S24
+Samsung Fold
+Tablet
+Laptop/Desktop
+
+==================================================
+DUMMY DATA
+==================================================
+
+Masukkan beberapa dummy untuk testing:
+
+1 invoice belum lunas:
+Customer: Dinas Psikologi Angkatan Darat Bandung
+Invoice: INV/NUF/2026/09/001
+Total: Rp976.800.000
+Payment: Rp727.885.000
+Remaining: Rp248.915.000
+
+Tambahkan contoh:
+1 invoice lunas
+1 invoice belum lunas
+1 invoice jatuh tempo
+
+Dummy hanya dibuat sekali.
+JANGAN melakukan reseeding setiap refresh.
+Jangan mengembalikan dummy setelah dihapus.
+
+==================================================
+FINAL
+==================================================
+
+Setelah selesai, TEST aplikasi secara otomatis.
+
+Pastikan semua workflow benar-benar berjalan:
+
+Login
+Dashboard
+Buat Invoice
+Edit Invoice
+Hapus Invoice
+Tambah Item
+Hitung Total
+Tambah Payment
+Hitung Payment
+Hitung Sisa
+Status otomatis
+Due Date
+Search
+Filter
+Detail Invoice
+Buat Kuitansi
+Nomor Kuitansi
+Invoice PDF
+Kuitansi PDF
+Print
+Pengaturan
+Rekening
+Template
+Database persistence
+Authentication
+PWA
+
+Jika menemukan error, perbaiki sendiri sebelum menyatakan selesai.
+
+JANGAN membuat tombol palsu.
+JANGAN membuat mockup saja.
+
+Hasil akhir harus menjadi aplikasi internal NUFATUR yang sederhana, stabil, mudah digunakan oleh orang tua, dan fokus pada:
+
+INVOICE
+→ PEMBAYARAN
+→ KUITANSI
+→ PDF
+
+Jika ada detail teknis yang tidak disebutkan, pilih solusi yang paling sederhana, aman, stabil, dan mudah dirawat di Replit.

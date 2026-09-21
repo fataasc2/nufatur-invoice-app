@@ -3,14 +3,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
+import { cp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
 
 const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
 
 async function buildAll() {
+  await execFileAsync("pnpm", ["--filter", "@workspace/nufatur-web", "run", "build"], {
+    cwd: path.resolve(artifactDir, "../.."),
+  });
   const distDir = path.resolve(artifactDir, "dist");
   await rm(distDir, { recursive: true, force: true });
 
@@ -118,6 +124,8 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
     `,
     },
   });
+  await cp(path.resolve(artifactDir, "../nufatur-web/dist"), path.resolve(distDir, "public"), { recursive: true });
+  await cp(path.resolve(artifactDir, "node_modules/pdfkit/js/data"), path.resolve(distDir, "data"), { recursive: true });
 }
 
 buildAll().catch((err) => {

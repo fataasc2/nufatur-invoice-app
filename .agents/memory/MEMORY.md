@@ -1,0 +1,1 @@
+- [PDFKit bundle assets](pdfkit-bundle-assets.md) — bundled PDFKit needs its AFM data copied beside the server bundle for standard fonts to work.

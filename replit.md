@@ -1,6 +1,6 @@
-# [Project name]
+# NUFATUR Invoice App
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Aplikasi internal NUFATUR untuk mengelola invoice, pembayaran, kuitansi, dan PDF dokumen perusahaan.
 
 ## Run & Operate
 
@@ -22,23 +22,33 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/routes/nufatur.ts` — API autentikasi, invoice, payment, receipt, settings, export, dan PDF.
+- `artifacts/api-server/src/lib/pdf.ts` — generator PDF A4 invoice/kuitansi.
+- `artifacts/nufatur-web/src/App.tsx` — UI utama responsive dan alur form.
+- `artifacts/nufatur-web/src/styles.css` — tema visual NUFATUR.
+- `lib/db/src/schema/index.ts` — schema PostgreSQL relasional.
+- `artifacts/nufatur-web/public/` — manifest, service worker, dan ikon PWA.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- UI dibuild dengan Vite lalu disalin ke bundle Express agar preview dan deployment memakai satu origin serta satu workflow.
+- Sesi login memakai cookie HttpOnly bertanda tangan HMAC; password awal hanya disimpan sebagai hash scrypt.
+- Status invoice dihitung dari total pembayaran dan due date di server, bukan dari tombol manual.
+- Data dummy dibuat sekali saat schema pertama kali dipakai; penanda `seeded_at` mencegah data muncul kembali setelah dihapus.
+- PDF dibuat sebagai dokumen A4 server-side dengan PDFKit, bukan screenshot halaman web.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Login internal, dashboard ringkas, CRUD invoice dengan item dinamis, status otomatis, payment history, kuitansi dari pembayaran, PDF A4, export CSV, pengaturan identitas/rekening/template, dan PWA responsive.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Prioritas produk: fungsi, stabilitas, kemudahan untuk pengguna senior, dan output PDF; hindari UI ramai atau over-engineering.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Workflow utama harus menjalankan `PORT=5000 pnpm --filter @workspace/api-server run dev`.
+- Setelah dependency atau schema berubah, jalankan `pnpm install`, `pnpm --filter @workspace/db run push`, lalu restart `Start application`.
 
 ## Pointers
 

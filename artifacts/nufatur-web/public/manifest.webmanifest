@@ -1,0 +1,13 @@
+{
+  "name": "NUFATUR Invoice App",
+  "short_name": "NUFATUR",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f8",
+  "theme_color": "#0c2f40",
+  "description": "Aplikasi invoice internal NUFATUR",
+  "icons": [
+    { "src": "/icon-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
