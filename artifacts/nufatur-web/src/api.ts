@@ -32,6 +32,7 @@ export type Invoice = {
   customerEmail?: string | null;
   customerAddress?: string | null;
   notes?: string | null;
+  includeText: string;
   items: Item[];
   payments: Payment[];
   subtotal: number;
@@ -53,6 +54,7 @@ export type Receipt = {
   words: string;
   purpose: string;
   notes?: string | null;
+  includeText: string;
   invoice?: { id: number; number: string };
 };
 export type Settings = {
@@ -65,6 +67,10 @@ export type Settings = {
   website: string;
   logoDataUrl?: string | null;
   signatureDataUrl?: string | null;
+  adminName: string;
+  adminTitle: string;
+  includeText: string;
+  pdfNotes: string;
   invoiceTitle: string;
   receiptTitle: string;
   footer: string;

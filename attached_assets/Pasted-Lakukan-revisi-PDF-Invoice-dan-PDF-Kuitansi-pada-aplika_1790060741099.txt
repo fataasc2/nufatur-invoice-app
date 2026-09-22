@@ -1,0 +1,304 @@
+Lakukan revisi PDF Invoice dan PDF Kuitansi pada aplikasi NUFATUR Invoice yang SUDAH ADA.
+
+PENTING:
+- JANGAN rebuild aplikasi dari awal.
+- JANGAN menghapus atau mereset database.
+- JANGAN menghapus data invoice, customer, payment, kuitansi, user, atau data lainnya.
+- JANGAN mengubah workflow/fungsi aplikasi yang sudah berjalan.
+- JANGAN mengubah desain halaman web/dashboard yang tidak berkaitan dengan PDF.
+- Jangan mengubah authentication/login.
+- Jangan mengubah database schema kecuali benar-benar diperlukan untuk menyimpan setting PDF baru.
+- Pertahankan semua fitur Invoice, Payment, Kuitansi, PDF, Dashboard, dan database yang sudah ada.
+- Kerjakan hanya revisi yang diminta di bawah.
+- Setelah selesai, WAJIB build/test aplikasi dan test generate PDF Invoice serta PDF Kuitansi.
+- Pastikan tidak ada TypeScript/build/runtime error.
+- Jika ada setting yang sudah ada, gunakan dan kembangkan setting tersebut daripada membuat sistem duplikat.
+
+==================================================
+A. NAMA & TANDA TANGAN ADMIN
+==================================================
+
+Pada PDF Invoice dan PDF Kuitansi saat ini terdapat nama dan tanda tangan admin.
+
+Buat agar informasi admin tersebut BISA DIEDIT dari aplikasi, bukan hardcoded.
+
+Buat/gunakan pengaturan Admin/Tanda Tangan yang dapat mengatur:
+
+1. Nama Admin/Penanggung Jawab
+2. Jabatan Admin
+3. Tanda tangan admin
+4. Logo/cap digital NUFATUR
+
+Nama admin yang tersimpan di Settings harus otomatis digunakan pada:
+- PDF Invoice
+- PDF Kuitansi
+
+Jika aplikasi sudah mempunyai Settings/Profile/Company Settings yang cocok, integrasikan ke sana. Jangan membuat halaman setting yang redundant jika fitur setting yang sama sudah tersedia.
+
+Tanda tangan harus bisa di-upload/diganti melalui Settings.
+
+==================================================
+B. CAP DIGITAL NUFATUR PADA TANDA TANGAN
+==================================================
+
+Pada area tanda tangan PDF Invoice dan PDF Kuitansi:
+
+Tambahkan cap/stempel digital menggunakan LOGO NUFATUR.
+
+Posisinya berada di area tanda tangan admin dan terlihat seperti cap digital/stempel perusahaan.
+
+Ketentuan:
+- Gunakan logo NUFATUR yang sudah digunakan aplikasi.
+- Jangan membuat logo baru.
+- Jangan mengubah logo menjadi stretched/distorted.
+- Pertahankan aspect ratio logo.
+- Cap jangan terlalu besar sehingga menutupi nama/tanda tangan secara berlebihan.
+- Cap harus terlihat profesional.
+- Cap boleh sedikit overlap dengan area tanda tangan seperti dokumen resmi.
+- Pastikan hasil PDF tetap rapi ketika dicetak A4.
+
+Jika logo tersedia sebagai asset lokal, gunakan asset tersebut.
+
+==================================================
+C. INCLUDE DI BAWAH DESCRIPTION
+==================================================
+
+Pada PDF Invoice dan PDF Kuitansi, tambahkan bagian:
+
+INCLUDE
+
+Posisi:
+- Di bawah kolom/bagian Description.
+- Tetap berada di area detail invoice/kuitansi.
+- Tidak mengganggu subtotal, diskon, pajak, cashback, total, atau informasi pembayaran.
+
+Isi INCLUDE harus bisa diedit.
+
+Buat field Include yang dapat diisi saat membuat/edit Invoice/Kuitansi atau melalui setting/template jika sistem template sudah tersedia.
+
+Contoh:
+
+INCLUDE
+• Tiket Pesawat
+• Hotel
+• Transportasi
+• Visa
+• Handling
+
+Jangan hardcode contoh di atas jika aplikasi sudah mempunyai sistem data/template. Jadikan kontennya editable.
+
+Jika Include kosong:
+- Jangan tampilkan section kosong di PDF.
+- Layout harus otomatis tetap rapi.
+
+==================================================
+D. DESKRIPSI DISKON, PAJAK, DAN CASHBACK
+==================================================
+
+Pada PDF Invoice dan Kuitansi, informasi perhitungan harus terlihat jelas.
+
+Pastikan PDF menampilkan keterangan/description untuk:
+
+- Diskon
+- Pajak
+- Cashback
+
+GANTI istilah:
+
+"Biaya Tambahan"
+
+menjadi:
+
+"CASHBACK"
+
+Jangan gunakan istilah "Biaya Tambahan" lagi pada PDF untuk bagian tersebut.
+
+Jika nilai diskon = 0:
+- Jangan membuat tampilan PDF menjadi penuh dengan baris kosong.
+- Tetap pertahankan layout rapi.
+
+Jika pajak = 0:
+- Jangan membuat tampilan PDF menjadi penuh dengan baris kosong.
+
+Jika cashback = 0:
+- Jangan tampilkan baris cashback kosong.
+
+Format angka harus konsisten dengan format Rupiah yang sudah digunakan aplikasi.
+
+Contoh struktur:
+
+Subtotal
+Diskon
+Pajak
+Cashback
+TOTAL
+
+Pastikan perhitungannya TIDAK berubah secara salah.
+
+PENTING:
+Jangan mengubah logic perhitungan yang sudah benar.
+Yang diminta adalah penyempurnaan tampilan/keterangan PDF dan penggantian label "Biaya Tambahan" menjadi "Cashback".
+
+==================================================
+E. CATATAN DEFAULT PDF
+==================================================
+
+Ubah DEFAULT CATATAN pada PDF Invoice dan Kuitansi menjadi teks berikut:
+
+* Pelunasan dilakukan 40 hari sebelum tanggal keberangkatan.
+* Deposit yang sudah kami terima akan hangus dan dianggap tidak melanjutkan blockseat/paket umroh lagi apabila pelunasan tidak
+  sesuai ketentuan diatas dan seat direlease kembali.
+* Kami tidak bertanggung jawab atas ter-CANCEL nya Group Booking yang terjadi dikarenakan keterlambatan pembayaran yang
+  tidak sesuai dengan jatuh tempo/timelimit yang sudah ditentukan tersebut.
+* Perubahan nama hanya bisa dilakukan sebelum issued sebanyak 10% dari total penumpang masing2 group.
+* Data manifest wajib dilengkapi : Nama, Gender, Tgl Lahir, No.Paspor, Exp. Paspor, Issue Paspor.
+* Manifest penumpang tersebut dikirimkan 10 hari sebelum keberangkatan/setelah pelunasan.
+
+PENTING:
+- Pertahankan teks PERSIS seperti di atas.
+- Jangan mengoreksi ejaan, kapitalisasi, tanda baca, atau kata-katanya.
+- Jangan mengubah isi.
+- Pecah baris hanya jika diperlukan untuk layout PDF A4, tetapi teksnya harus tetap sama.
+
+Tampilan CATATAN harus dibuat lebih terlihat.
+
+Gunakan warna:
+- kuning muda / yellow highlight
+ATAU
+- merah muda / light red highlight
+
+Tujuannya agar bagian CATATAN mudah terlihat oleh customer.
+
+Jangan gunakan warna terlalu gelap sehingga teks sulit dibaca.
+
+Pastikan:
+- teks tetap jelas
+- tidak keluar halaman
+- tidak overlap
+- tetap bagus ketika PDF dicetak
+- tetap A4 portrait
+
+==================================================
+F. QTY HARUS BILANGAN BULAT
+==================================================
+
+Pada PDF Invoice dan Kuitansi:
+
+Sekarang Qty muncul seperti:
+
+1.00
+
+Ubah menjadi:
+
+1
+
+Contoh:
+
+1.00 → 1
+2.00 → 2
+10.00 → 10
+
+Qty harus ditampilkan sebagai bilangan bulat TANPA angka desimal.
+
+PENTING:
+- Jangan mengubah database type jika tidak diperlukan.
+- Jangan mengubah logic perhitungan quantity.
+- Hanya ubah FORMAT tampilan Qty pada PDF dan UI terkait jika memang menggunakan formatter yang sama.
+- Harga dan total tetap menggunakan format angka Rupiah yang benar.
+
+==================================================
+G. LOGO NUFATUR PADA PDF
+==================================================
+
+Pada header PDF Invoice:
+
+Logo NUFATUR saat ini terlalu kecil/rendah.
+
+Perbaiki:
+
+1. Logo NUFATUR sedikit diperbesar.
+2. Naikkan posisi logo sedikit.
+3. Sejajarkan secara visual dengan tulisan:
+
+INVOICE
+
+4. Jangan stretch/distort logo.
+5. Pertahankan aspect ratio.
+6. Jangan membuat logo bertabrakan dengan alamat/contact/company information.
+7. Terapkan penyesuaian yang konsisten pada PDF Kuitansi jika header-nya menggunakan struktur yang sama.
+
+Target visual:
+Logo dan tulisan "INVOICE" terlihat berada dalam satu garis/header yang seimbang dan profesional.
+
+==================================================
+H. KONSISTENSI PDF
+==================================================
+
+Semua revisi di atas harus diterapkan secara konsisten pada:
+
+1. PDF Invoice
+2. PDF Kuitansi
+
+Pastikan:
+- A4 portrait
+- tidak ada elemen terpotong
+- tidak ada text overlap
+- tidak ada logo stretched
+- tidak ada tanda tangan/cap keluar halaman
+- catatan tidak terpotong
+- Include tidak terpotong
+- angka tetap benar
+- format Rupiah tetap benar
+- page break tetap rapi jika dokumen panjang
+
+==================================================
+I. TESTING WAJIB
+==================================================
+
+Setelah implementasi:
+
+1. Jalankan typecheck.
+2. Jalankan build.
+3. Pastikan tidak ada TypeScript error.
+4. Pastikan tidak ada runtime error.
+5. Buat/test minimal satu Invoice.
+6. Generate PDF Invoice.
+7. Pastikan PDF Invoice berhasil dibuka.
+8. Generate PDF Kuitansi.
+9. Pastikan PDF Kuitansi berhasil dibuka.
+10. Periksa secara visual:
+    - logo
+    - nama admin
+    - tanda tangan
+    - cap digital NUFATUR
+    - Include
+    - Diskon
+    - Pajak
+    - Cashback
+    - Qty tanpa .00
+    - Catatan dengan highlight
+11. Pastikan API/database tetap berjalan.
+12. Pastikan login dan fitur existing tetap berjalan.
+
+JANGAN melakukan reset database atau menghapus data untuk testing.
+
+==================================================
+J. HASIL AKHIR
+==================================================
+
+Setelah selesai, laporkan secara singkat:
+
+1. File yang diubah.
+2. Fitur PDF yang berhasil direvisi.
+3. Apakah Invoice PDF berhasil dibuat.
+4. Apakah Kuitansi PDF berhasil dibuat.
+5. Apakah typecheck berhasil.
+6. Apakah build berhasil.
+7. Apakah ada masalah yang masih tersisa.
+
+PENTING:
+Jangan berhenti hanya setelah coding selesai.
+WAJIB test hasil PDF sampai benar-benar bisa generate dan dibuka.
+
+Jangan meminta saya melakukan coding manual.
+Kerjakan perubahan langsung pada project yang sekarang.

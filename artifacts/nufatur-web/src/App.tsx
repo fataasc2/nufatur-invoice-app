@@ -39,6 +39,7 @@ type InvoiceDraft = {
   customerEmail: string;
   customerAddress: string;
   notes: string;
+  includeText: string;
   discount: string;
   additionalCost: string;
   tax: string;
@@ -66,6 +67,7 @@ const emptyDraft = (): InvoiceDraft => ({
   customerEmail: "",
   customerAddress: "",
   notes: "",
+  includeText: "",
   discount: "0",
   additionalCost: "0",
   tax: "0",
@@ -89,6 +91,7 @@ function draftFromInvoice(invoice: Invoice): InvoiceDraft {
     customerEmail: invoice.customerEmail ?? "",
     customerAddress: invoice.customerAddress ?? "",
     notes: invoice.notes ?? "",
+    includeText: invoice.includeText ?? "",
     discount: String(invoice.discount),
     additionalCost: String(invoice.additionalCost),
     tax: String(invoice.tax),
@@ -279,7 +282,7 @@ function InvoiceForm({ initial, onClose, onSaved, onError }: { initial: InvoiceD
   return <Modal title={draft.id ? "Edit invoice" : "Buat invoice baru"} onClose={onClose} wide><form onSubmit={save} className="form-content">
     <div className="form-section"><div className="section-heading"><h3>Informasi invoice</h3><span>Semua tanggal menggunakan zona waktu lokal.</span></div><div className="form-grid four"><label>Nomor invoice<input value={draft.number} onChange={(event) => update("number", event.target.value)} placeholder="Kosongkan untuk nomor otomatis" /></label><label>Tanggal<input type="date" value={draft.invoiceDate} onChange={(event) => update("invoiceDate", event.target.value)} /></label><label>Jatuh tempo<input type="date" value={draft.dueDate} onChange={(event) => update("dueDate", event.target.value)} /></label><label>Jenis customer<select value={draft.customerType} onChange={(event) => update("customerType", event.target.value)}><option>Perusahaan</option><option>Instansi</option><option>Keluarga</option><option>Perorangan</option></select></label></div><div className="form-grid two"><label>Nama customer / perusahaan<input required value={draft.customerName} onChange={(event) => update("customerName", event.target.value)} /></label><label>Reference<input value={draft.reference} onChange={(event) => update("reference", event.target.value)} placeholder="Contoh: Paket wisata keluarga" /></label><label>WhatsApp<input value={draft.customerWhatsapp} onChange={(event) => update("customerWhatsapp", event.target.value)} /></label><label>Email<input type="email" value={draft.customerEmail} onChange={(event) => update("customerEmail", event.target.value)} /></label><label className="span-two">Alamat<textarea value={draft.customerAddress} onChange={(event) => update("customerAddress", event.target.value)} rows={2} /></label></div></div>
     <div className="form-section"><div className="section-heading"><h3>Detail invoice</h3><button type="button" className="button small secondary" onClick={() => setDraft((current) => ({ ...current, items: [...current.items, emptyItem()] }))}><Plus size={15} />Tambah item</button></div><div className="item-editor">{draft.items.map((item, index) => <div className="item-row" key={index}><div className="item-row-number">{index + 1}</div><label>Deskripsi<input value={item.description} onChange={(event) => updateItem(index, { description: event.target.value })} /></label><label>Qty / Pax<input type="number" min="0" value={item.quantity ?? ""} onChange={(event) => updateItem(index, { quantity: event.target.value })} /></label><label>Harga<input type="number" min="0" value={item.price ?? ""} onChange={(event) => updateItem(index, { price: event.target.value })} /></label><label>Tanggal<input type="date" value={item.itemDate ?? ""} onChange={(event) => updateItem(index, { itemDate: event.target.value })} /></label><strong className="item-amount">{money(Number(item.quantity) && Number(item.price) ? Number(item.quantity) * Number(item.price) : Number(item.amount) || 0)}</strong><button type="button" className="icon-button danger-icon" disabled={draft.items.length === 1} onClick={() => setDraft((current) => ({ ...current, items: current.items.filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 size={16} /></button><label className="item-detail">Flight / keterangan<textarea value={item.details ?? ""} onChange={(event) => updateItem(index, { details: event.target.value })} rows={1} placeholder="Opsional" /></label></div>)}</div><div className="totals-editor"><div><span>Subtotal</span><strong>{money(computedSubtotal)}</strong></div><label>Discount<input type="number" min="0" value={draft.discount} onChange={(event) => update("discount", event.target.value)} /></label><label>Biaya tambahan<input type="number" min="0" value={draft.additionalCost} onChange={(event) => update("additionalCost", event.target.value)} /></label><label>Pajak<input type="number" min="0" value={draft.tax} onChange={(event) => update("tax", event.target.value)} /></label><div className="total-highlight"><span>Total invoice</span><strong>{money(total)}</strong></div></div></div>
-    <div className="form-section"><label>Catatan<textarea value={draft.notes} onChange={(event) => update("notes", event.target.value)} rows={3} placeholder="Catatan untuk customer atau tim..." /></label></div>
+    <div className="form-section"><div className="form-grid two"><label>Include PDF<textarea value={draft.includeText} onChange={(event) => update("includeText", event.target.value)} rows={4} placeholder={"Contoh:\n• Tiket Pesawat\n• Hotel\n• Transportasi"} /></label><label>Catatan invoice<textarea value={draft.notes} onChange={(event) => update("notes", event.target.value)} rows={4} placeholder="Catatan tambahan untuk customer atau tim..." /></label></div></div>
     <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : draft.id ? "Simpan perubahan" : "Simpan invoice"}</button></div>
   </form></Modal>;
 }
@@ -323,21 +326,97 @@ function SettingsPage({ onNotice, onError }: { onNotice: (message: string) => vo
   const [banks, setBanks] = useState<Bank[]>([]);
   const [saving, setSaving] = useState(false);
   const [newBank, setNewBank] = useState({ bankName: "", accountNumber: "", accountName: "", isPrimary: false });
-  useEffect(() => { api<{ settings: CompanySettings; banks: Bank[] }>("/api/settings").then((result) => { setSettings(result.settings); setBanks(result.banks); }).catch((error) => onError(error.message)); }, [onError]);
+  useEffect(() => {
+    api<{ settings: CompanySettings; banks: Bank[] }>("/api/settings")
+      .then((result) => { setSettings(result.settings); setBanks(result.banks); })
+      .catch((error) => onError(error.message));
+  }, [onError]);
   if (!settings) return <LoadingBlock />;
+
   async function save(event: React.FormEvent) {
-    event.preventDefault(); setSaving(true);
-    try { const result = await api<{ settings: CompanySettings }>("/api/settings", { method: "PATCH", body: JSON.stringify(settings) }); setSettings(result.settings); onNotice("Pengaturan berhasil disimpan."); } catch (error) { onError(error instanceof Error ? error.message : "Gagal menyimpan pengaturan."); } finally { setSaving(false); }
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const result = await api<{ settings: CompanySettings }>("/api/settings", { method: "PATCH", body: JSON.stringify(settings) });
+      setSettings(result.settings);
+      onNotice("Pengaturan berhasil disimpan.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal menyimpan pengaturan.");
+    } finally {
+      setSaving(false);
+    }
   }
+
   async function addBank(event: React.FormEvent) {
     event.preventDefault();
-    try { const result = await api<{ bank: Bank }>("/api/settings/banks", { method: "POST", body: JSON.stringify(newBank) }); setBanks((current) => [...current, result.bank]); setNewBank({ bankName: "", accountNumber: "", accountName: "", isPrimary: false }); onNotice("Rekening berhasil ditambahkan."); } catch (error) { onError(error instanceof Error ? error.message : "Gagal menambah rekening."); }
+    try {
+      const result = await api<{ bank: Bank }>("/api/settings/banks", { method: "POST", body: JSON.stringify(newBank) });
+      setBanks((current) => [...current, result.bank]);
+      setNewBank({ bankName: "", accountNumber: "", accountName: "", isPrimary: false });
+      onNotice("Rekening berhasil ditambahkan.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal menambah rekening.");
+    }
   }
+
   async function uploadAsset(event: React.ChangeEvent<HTMLInputElement>, key: "logoDataUrl" | "signatureDataUrl") {
-    const file = event.target.files?.[0]; if (!file) return;
-    const reader = new FileReader(); reader.onload = () => setSettings((current) => current ? { ...current, [key]: String(reader.result) } : current); reader.readAsDataURL(file);
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setSettings((current) => current ? { ...current, [key]: String(reader.result) } : current);
+    reader.readAsDataURL(file);
   }
-  return <><PageIntro eyebrow="KONFIGURASI" title="Pengaturan" description="Kelola identitas perusahaan, rekening, dan tampilan dokumen." /><form onSubmit={save} className="settings-layout"><section className="panel settings-card"><div className="panel-heading"><div><p className="eyebrow">IDENTITAS PERUSAHAAN</p><h3>Data utama</h3></div><Settings size={20} /></div><div className="asset-upload"><div className="asset-preview">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="Logo perusahaan" /> : <span>N</span>}</div><label className="button small secondary">Unggah logo<input type="file" accept="image/*" onChange={(event) => void uploadAsset(event, "logoDataUrl")} hidden /></label><small>PNG/JPG, digunakan di PDF invoice.</small></div><div className="form-grid two"><label>Nama perusahaan<input value={settings.companyName} onChange={(event) => setSettings({ ...settings, companyName: event.target.value })} /></label><label>Nama brand<input value={settings.brandName} onChange={(event) => setSettings({ ...settings, brandName: event.target.value })} /></label><label className="span-two">Alamat<textarea rows={3} value={settings.address} onChange={(event) => setSettings({ ...settings, address: event.target.value })} /></label><label>WhatsApp<input value={settings.whatsapp} onChange={(event) => setSettings({ ...settings, whatsapp: event.target.value })} /></label><label>Email<input type="email" value={settings.email} onChange={(event) => setSettings({ ...settings, email: event.target.value })} /></label><label>Website<input value={settings.website} onChange={(event) => setSettings({ ...settings, website: event.target.value })} /></label></div></section><section className="panel settings-card"><div className="panel-heading"><div><p className="eyebrow">DOKUMEN</p><h3>Template sederhana</h3></div><FileText size={20} /></div><div className="form-grid two"><label>Judul invoice<input value={settings.invoiceTitle} onChange={(event) => setSettings({ ...settings, invoiceTitle: event.target.value })} /></label><label>Judul kuitansi<input value={settings.receiptTitle} onChange={(event) => setSettings({ ...settings, receiptTitle: event.target.value })} /></label><label className="span-two">Footer PDF<textarea rows={3} value={settings.footer} onChange={(event) => setSettings({ ...settings, footer: event.target.value })} /></label><label className="span-two">Instruksi pembayaran<textarea rows={3} value={settings.notes} onChange={(event) => setSettings({ ...settings, notes: event.target.value })} /></label></div><div className="asset-upload signature"><div className="signature-preview">{settings.signatureDataUrl ? <img src={settings.signatureDataUrl} alt="Tanda tangan" /> : <span>Tanda tangan belum diatur</span>}</div><label className="button small secondary">Unggah tanda tangan<input type="file" accept="image/*" onChange={(event) => void uploadAsset(event, "signatureDataUrl")} hidden /></label></div></section><section className="panel settings-card bank-settings"><div className="panel-heading"><div><p className="eyebrow">PEMBAYARAN</p><h3>Rekening bank</h3></div><Banknote size={20} /></div>{banks.map((bank) => <div className="bank-row" key={bank.id}><div className="bank-badge">{bank.bankName.slice(0, 2).toUpperCase()}</div><div><strong>{bank.bankName}</strong><span>{bank.accountNumber} • {bank.accountName}</span></div>{bank.isPrimary && <span className="primary-label">Utama</span>}</div>)}<div className="add-bank"><h4>Tambah rekening</h4><div className="form-grid three"><label>Bank<input value={newBank.bankName} onChange={(event) => setNewBank({ ...newBank, bankName: event.target.value })} /></label><label>Nomor rekening<input value={newBank.accountNumber} onChange={(event) => setNewBank({ ...newBank, accountNumber: event.target.value })} /></label><label>Nama rekening<input value={newBank.accountName} onChange={(event) => setNewBank({ ...newBank, accountName: event.target.value })} /></label></div><button type="button" className="button small secondary" onClick={(event) => void addBank(event as unknown as React.FormEvent)}><Plus size={15} />Tambah rekening</button></div></section><div className="settings-save"><button className="button primary" disabled={saving}>{saving ? "Menyimpan..." : "Simpan semua pengaturan"}</button></div></form></>;
+
+  return <>
+    <PageIntro eyebrow="KONFIGURASI" title="Pengaturan" description="Kelola identitas perusahaan, admin, rekening, dan tampilan dokumen." />
+    <form onSubmit={save} className="settings-layout">
+      <section className="panel settings-card">
+        <div className="panel-heading"><div><p className="eyebrow">IDENTITAS PERUSAHAAN</p><h3>Data utama</h3></div><Settings size={20} /></div>
+        <div className="asset-upload">
+          <div className="asset-preview">{settings.logoDataUrl ? <img src={settings.logoDataUrl} alt="Logo perusahaan" /> : <span>N</span>}</div>
+          <label className="button small secondary">Unggah logo<input type="file" accept="image/*" onChange={(event) => void uploadAsset(event, "logoDataUrl")} hidden /></label>
+          <small>PNG/JPG, digunakan sebagai logo dan cap digital PDF.</small>
+        </div>
+        <div className="form-grid two">
+          <label>Nama perusahaan<input value={settings.companyName} onChange={(event) => setSettings({ ...settings, companyName: event.target.value })} /></label>
+          <label>Nama brand<input value={settings.brandName} onChange={(event) => setSettings({ ...settings, brandName: event.target.value })} /></label>
+          <label className="span-two">Alamat<textarea rows={3} value={settings.address} onChange={(event) => setSettings({ ...settings, address: event.target.value })} /></label>
+          <label>WhatsApp<input value={settings.whatsapp} onChange={(event) => setSettings({ ...settings, whatsapp: event.target.value })} /></label>
+          <label>Email<input type="email" value={settings.email} onChange={(event) => setSettings({ ...settings, email: event.target.value })} /></label>
+          <label>Website<input value={settings.website} onChange={(event) => setSettings({ ...settings, website: event.target.value })} /></label>
+        </div>
+      </section>
+      <section className="panel settings-card">
+        <div className="panel-heading"><div><p className="eyebrow">ADMIN & TANDA TANGAN</p><h3>Penanggung jawab dokumen</h3></div><ShieldCheck size={20} /></div>
+        <div className="form-grid two">
+          <label>Nama admin / penanggung jawab<input value={settings.adminName} onChange={(event) => setSettings({ ...settings, adminName: event.target.value })} /></label>
+          <label>Jabatan admin<input value={settings.adminTitle} onChange={(event) => setSettings({ ...settings, adminTitle: event.target.value })} /></label>
+        </div>
+        <div className="asset-upload signature">
+          <div className="signature-preview">{settings.signatureDataUrl ? <img src={settings.signatureDataUrl} alt="Tanda tangan" /> : <span>Tanda tangan belum diatur</span>}</div>
+          <label className="button small secondary">Unggah tanda tangan<input type="file" accept="image/*" onChange={(event) => void uploadAsset(event, "signatureDataUrl")} hidden /></label>
+          <small>Logo perusahaan digunakan sebagai cap digital di dekat tanda tangan.</small>
+        </div>
+      </section>
+      <section className="panel settings-card">
+        <div className="panel-heading"><div><p className="eyebrow">DOKUMEN</p><h3>Template PDF</h3></div><FileText size={20} /></div>
+        <div className="form-grid two">
+          <label>Judul invoice<input value={settings.invoiceTitle} onChange={(event) => setSettings({ ...settings, invoiceTitle: event.target.value })} /></label>
+          <label>Judul kuitansi<input value={settings.receiptTitle} onChange={(event) => setSettings({ ...settings, receiptTitle: event.target.value })} /></label>
+          <label className="span-two">Include default PDF<textarea rows={4} value={settings.includeText} onChange={(event) => setSettings({ ...settings, includeText: event.target.value })} placeholder={"Contoh:\n• Tiket Pesawat\n• Hotel\n• Transportasi"} /></label>
+          <label className="span-two">Catatan default PDF<textarea rows={8} value={settings.pdfNotes} onChange={(event) => setSettings({ ...settings, pdfNotes: event.target.value })} /></label>
+          <label className="span-two">Footer PDF<textarea rows={3} value={settings.footer} onChange={(event) => setSettings({ ...settings, footer: event.target.value })} /></label>
+          <label className="span-two">Instruksi pembayaran<textarea rows={3} value={settings.notes} onChange={(event) => setSettings({ ...settings, notes: event.target.value })} /></label>
+        </div>
+      </section>
+      <section className="panel settings-card bank-settings">
+        <div className="panel-heading"><div><p className="eyebrow">PEMBAYARAN</p><h3>Rekening bank</h3></div><Banknote size={20} /></div>
+        {banks.map((bank) => <div className="bank-row" key={bank.id}><div className="bank-badge">{bank.bankName.slice(0, 2).toUpperCase()}</div><div><strong>{bank.bankName}</strong><span>{bank.accountNumber} • {bank.accountName}</span></div>{bank.isPrimary && <span className="primary-label">Utama</span>}</div>)}
+        <div className="add-bank"><h4>Tambah rekening</h4><div className="form-grid three"><label>Bank<input value={newBank.bankName} onChange={(event) => setNewBank({ ...newBank, bankName: event.target.value })} /></label><label>Nomor rekening<input value={newBank.accountNumber} onChange={(event) => setNewBank({ ...newBank, accountNumber: event.target.value })} /></label><label>Nama rekening<input value={newBank.accountName} onChange={(event) => setNewBank({ ...newBank, accountName: event.target.value })} /></label></div><button type="button" className="button small secondary" onClick={(event) => void addBank(event as unknown as React.FormEvent)}><Plus size={15} />Tambah rekening</button></div>
+      </section>
+      <div className="settings-save"><button className="button primary" disabled={saving}>{saving ? "Menyimpan..." : "Simpan semua pengaturan"}</button></div>
+    </form>
+  </>;
 }
 
 function LoadingBlock() { return <div className="loading-block"><div className="spinner" /><span>Memuat data...</span></div>; }

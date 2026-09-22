@@ -129,6 +129,10 @@ router.patch("/settings", guard(async (req, res, userId) => {
     website: text(body.website),
     logoDataUrl: optionalText(body.logoDataUrl),
     signatureDataUrl: optionalText(body.signatureDataUrl),
+    adminName: text(body.adminName, "Admin NUFATUR"),
+    adminTitle: text(body.adminTitle, "Penanggung Jawab"),
+    includeText: text(body.includeText),
+    pdfNotes: text(body.pdfNotes),
     invoiceTitle: text(body.invoiceTitle, "INVOICE"),
     receiptTitle: text(body.receiptTitle, "KUITANSI"),
     footer: text(body.footer),
@@ -238,6 +242,7 @@ router.post("/invoices", guard(async (req, res, userId) => {
       customerEmail: optionalText(body.customerEmail),
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
+       includeText: text(body.includeText),
       discount: String(moneyValue(body.discount)),
       additionalCost: String(moneyValue(body.additionalCost)),
       tax: String(moneyValue(body.tax)),
@@ -286,6 +291,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       customerEmail: optionalText(body.customerEmail),
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
+       includeText: text(body.includeText, existing.includeText),
       discount: String(moneyValue(body.discount)),
       additionalCost: String(moneyValue(body.additionalCost)),
       tax: String(moneyValue(body.tax)),
@@ -382,6 +388,7 @@ router.post("/payments/:id/receipt", guard(async (req, res, userId) => {
     words: terbilang(payment.amount),
     purpose: text(body.purpose, payment.description),
     notes: optionalText(body.notes),
+     includeText: text(body.includeText, invoice.includeText),
   }).returning())[0];
   await audit(userId, "create", "receipt", receipt.id, { paymentId });
   res.status(201).json({ receipt });
@@ -427,12 +434,27 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     return;
   }
   const payment = (await db.select().from(payments).where(eq(payments.id, receipt.paymentId)).limit(1))[0];
-  const invoice = payment ? (await db.select({ number: invoices.number }).from(invoices).where(eq(invoices.id, payment.invoiceId)).limit(1))[0] : null;
+  const invoice = payment ? await invoiceRecord(payment.invoiceId) : null;
   if (!payment || !invoice) {
     res.status(404).json({ message: "Pembayaran terkait tidak ditemukan." });
     return;
   }
-  streamReceiptPdf(res, company, { ...receipt, invoiceNumber: invoice.number, method: payment.method, bank: payment.bank }, req.query.inline === "1");
+  streamReceiptPdf(res, {
+    ...company,
+    includeText: company.includeText,
+    pdfNotes: company.pdfNotes,
+  }, {
+    ...receipt,
+    invoiceNumber: invoice.number,
+    method: payment.method,
+    bank: payment.bank,
+    includeText: receipt.includeText || invoice.includeText || company.includeText,
+    subtotal: invoice.subtotal,
+    discount: invoice.discount,
+    tax: invoice.tax,
+    cashback: invoice.additionalCost,
+    total: invoice.total,
+  }, req.query.inline === "1");
 }));
 
 export async function initializeAppData(): Promise<void> {
