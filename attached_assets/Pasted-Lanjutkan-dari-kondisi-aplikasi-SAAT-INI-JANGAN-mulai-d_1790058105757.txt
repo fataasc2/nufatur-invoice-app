@@ -1,0 +1,62 @@
+Lanjutkan dari kondisi aplikasi SAAT INI. JANGAN mulai dari awal dan JANGAN rebuild aplikasi.
+
+Kondisi terakhir:
+- Server utama sudah listen di 0.0.0.0:5000.
+- Root "/" sudah HTTP 200.
+- /api/healthz sudah sehat.
+- Binding host sudah diperbaiki ke 0.0.0.0.
+- Database dan fitur aplikasi TIDAK BOLEH dihapus atau di-reset.
+- Replit Agent sebelumnya menemukan bahwa artifact `artifacts/api-server` masih memiliki konfigurasi Preview pada port 8080 dan service managed tersebut sempat berhenti.
+- Service `artifacts/api-server` sudah dicoba di-restart.
+
+Sekarang LANJUTKAN DEBUGGING DARI KONDISI TERSEBUT.
+
+Tujuan akhir:
+Preview Replit harus benar-benar bisa membuka halaman utama aplikasi melalui tombol Preview, bukan hanya server terlihat running.
+
+Lakukan langkah berikut secara langsung:
+
+1. Periksa workflow aktif dan deployment configuration Replit.
+2. Pastikan hanya ada SATU server utama yang digunakan untuk Preview, atau jika artifact `artifacts/api-server` memang harus digunakan, pastikan konfigurasi port-nya konsisten.
+3. Jangan gunakan port hardcoded. Gunakan `process.env.PORT` dengan fallback yang aman untuk development.
+4. Pastikan server listen:
+   `0.0.0.0:${process.env.PORT}`
+5. Periksa konfigurasi `.replit`, `replit.toml`, workflow, deployment configuration, dan script start yang relevan.
+6. Pastikan Preview mengarah ke service/port yang BENAR-BENAR sedang aktif.
+7. Jangan menjalankan frontend Vite terpisah sebagai Preview jika API server memang sudah build dan serve frontend production.
+8. Pastikan root `/` mengembalikan aplikasi NUFATUR, bukan hanya HTTP 200 kosong.
+9. Test endpoint:
+   - `/`
+   - `/api/healthz`
+   - `/api/auth/session`
+10. Test dari sisi Preview/browser, bukan hanya curl/local request.
+11. Jika ada process lama yang bentrok pada port, hentikan process yang salah dan jalankan hanya process yang diperlukan.
+12. Jika ada error TypeScript/build/runtime/dependency, perbaiki hanya bagian yang diperlukan.
+13. JANGAN mengubah UI, desain, database schema, data, invoice, payment, kuitansi, PDF, authentication, atau fitur bisnis.
+14. JANGAN menjalankan database reset, migration destructive, seed destructive, DROP TABLE, atau menghapus data.
+15. Jangan membuat ulang aplikasi.
+
+SETELAH PERBAIKAN:
+- Restart workflow/service yang diperlukan.
+- Pastikan log menunjukkan server running.
+- Pastikan server bind ke 0.0.0.0.
+- Pastikan port yang dipakai sama dengan port Preview.
+- Buka/test Preview.
+- Pastikan halaman login NUFATUR benar-benar terlihat di Preview.
+- Test `/api/healthz`.
+- Test `/api/auth/session`.
+- Jika masih gagal, lanjutkan debugging sampai menemukan konfigurasi yang menyebabkan Preview tidak dapat terhubung.
+
+PENTING:
+Jangan berhenti hanya karena server menghasilkan HTTP 200 dari internal request.
+Keberhasilan dianggap tercapai HANYA jika Preview Replit dapat membuka halaman utama NUFATUR di browser.
+
+Setelah selesai, laporkan:
+1. Port final yang digunakan.
+2. Command final yang menjalankan server.
+3. File konfigurasi yang diubah.
+4. Hasil test Preview.
+5. Hasil `/api/healthz`.
+6. Apakah halaman login NUFATUR terlihat di Preview.
+
+JANGAN meminta saya melakukan langkah manual kecuali benar-benar diperlukan. Kerjakan dan test langsung.

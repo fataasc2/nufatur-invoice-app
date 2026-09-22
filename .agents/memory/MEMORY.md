@@ -1,1 +1,2 @@
 - [PDFKit bundle assets](pdfkit-bundle-assets.md) — bundled PDFKit needs its AFM data copied beside the server bundle for standard fonts to work.
+- [Full-stack artifact preview](artifact-preview-routing.md) — an Express app serving UI and API must expose its artifact preview at `/`, not an API-only prefix.
