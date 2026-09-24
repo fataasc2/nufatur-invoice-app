@@ -31,10 +31,6 @@ export const companySettings = pgTable("company_settings", {
   website: varchar("website", { length: 160 }).notNull(),
   logoDataUrl: text("logo_data_url"),
   signatureDataUrl: text("signature_data_url"),
-  adminName: varchar("admin_name", { length: 160 }).notNull().default("Admin NUFATUR"),
-  adminTitle: varchar("admin_title", { length: 160 }).notNull().default("Penanggung Jawab"),
-  includeText: text("include_text").notNull().default(""),
-  pdfNotes: text("pdf_notes").notNull().default("* Pelunasan dilakukan 40 hari sebelum tanggal keberangkatan.\n* Deposit yang sudah kami terima akan hangus dan dianggap tidak melanjutkan blockseat/paket umroh lagi apabila pelunasan tidak sesuai ketentuan diatas dan seat direlease kembali.\n* Kami tidak bertanggung jawab atas ter-CANCEL nya Group Booking yang terjadi dikarenakan keterlambatan pembayaran yang tidak sesuai dengan jatuh tempo/timelimit yang sudah ditentukan tersebut.\n* Perubahan nama hanya bisa dilakukan sebelum issued sebanyak 10% dari total penumpang masing2 group.\n* Data manifest wajib dilengkapi : Nama, Gender, Tgl Lahir, No.Paspor, Exp. Paspor, Issue Paspor.\n* Manifest penumpang tersebut dikirimkan 10 hari sebelum keberangkatan/setelah pelunasan."),
   invoiceTitle: varchar("invoice_title", { length: 100 }).notNull().default("INVOICE"),
   receiptTitle: varchar("receipt_title", { length: 100 }).notNull().default("KUITANSI"),
   footer: text("footer").notNull().default("Terima kasih telah mempercayakan perjalanan Anda kepada NUFATUR."),
@@ -62,12 +58,26 @@ export const customers = pgTable("customers", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const departureGroups = pgTable("departure_groups", {
+  id: serial("id").primaryKey(),
+  code: varchar("code", { length: 80 }).notNull().unique(),
+  name: varchar("name", { length: 200 }).notNull(),
+  departureDate: date("departure_date").notNull(),
+  returnDate: date("return_date"),
+  packageName: varchar("package_name", { length: 200 }).notNull(),
+  notes: text("notes"),
+  status: varchar("status", { length: 24 }).notNull().default("active"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const invoices = pgTable("invoices", {
   id: serial("id").primaryKey(),
   number: varchar("number", { length: 80 }).notNull().unique(),
   invoiceDate: date("invoice_date").notNull(),
   dueDate: date("due_date").notNull(),
   reference: text("reference"),
+  groupId: integer("group_id").references(() => departureGroups.id, { onDelete: "set null" }),
   customerId: integer("customer_id").references(() => customers.id, { onDelete: "set null" }),
   customerType: varchar("customer_type", { length: 40 }).notNull().default("Perusahaan"),
   customerName: varchar("customer_name", { length: 200 }).notNull(),
@@ -75,7 +85,6 @@ export const invoices = pgTable("invoices", {
   customerEmail: varchar("customer_email", { length: 160 }),
   customerAddress: text("customer_address"),
   notes: text("notes"),
-  includeText: text("include_text").notNull().default(""),
   discount: numeric("discount", { precision: 16, scale: 2 }).notNull().default("0"),
   additionalCost: numeric("additional_cost", { precision: 16, scale: 2 }).notNull().default("0"),
   tax: numeric("tax", { precision: 16, scale: 2 }).notNull().default("0"),
@@ -119,7 +128,6 @@ export const receipts = pgTable("receipts", {
   words: text("words").notNull(),
   purpose: text("purpose").notNull(),
   notes: text("notes"),
-  includeText: text("include_text").notNull().default(""),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

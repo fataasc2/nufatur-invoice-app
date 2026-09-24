@@ -7,7 +7,10 @@ const COOKIE_NAME = "nufatur_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 8;
 
 function secret(): string {
-  return process.env.SESSION_SECRET ?? "development-only-session-secret";
+  const configured = process.env.SESSION_SECRET;
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") throw new Error("SESSION_SECRET must be set in production.");
+  return "development-only-session-secret";
 }
 
 export function hashPassword(password: string): string {
@@ -80,9 +83,11 @@ export async function requireUser(req: Request, res: Response): Promise<number |
 export async function ensureOwnerAccount(): Promise<void> {
   const existing = await db.select({ id: users.id }).from(users).where(and(eq(users.username, "nufatur"))).limit(1);
   if (existing.length === 0) {
+    const initialPassword = process.env.INITIAL_OWNER_PASSWORD;
+    if (!initialPassword) throw new Error("INITIAL_OWNER_PASSWORD must be set before creating the owner account.");
     await db.insert(users).values({
       username: "nufatur",
-      passwordHash: hashPassword("bismillah827"),
+      passwordHash: hashPassword(initialPassword),
       displayName: "NUFATUR",
       role: "owner",
     });

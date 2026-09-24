@@ -20,12 +20,31 @@ export type Payment = {
   notes?: string | null;
   invoice?: { id: number; number: string; customerName: string };
 };
+export type DepartureGroup = {
+  id: number;
+  code: string;
+  name: string;
+  departureDate: string;
+  returnDate?: string | null;
+  packageName: string;
+  notes?: string | null;
+  status: string;
+};
+export type DepartureGroupDetail = DepartureGroup & {
+  invoiceCount: number;
+  invoiceTotal: number;
+  paymentTotal: number;
+  remainingTotal: number;
+  invoices: Invoice[];
+};
 export type Invoice = {
   id: number;
   number: string;
   invoiceDate: string;
   dueDate: string;
   reference?: string | null;
+    groupId?: number | null;
+    group?: DepartureGroup | null;
   customerType: string;
   customerName: string;
   customerWhatsapp?: string | null;
@@ -56,6 +75,7 @@ export type Receipt = {
   notes?: string | null;
   includeText: string;
   invoice?: { id: number; number: string };
+  group?: DepartureGroup | null;
 };
 export type Settings = {
   id: number;
@@ -99,6 +119,18 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const money = (value: number | string | null | undefined) =>
   new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(Number(value ?? 0));
+export const parseMoneyInput = (value: string | number | null | undefined): number => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const digits = String(value ?? "").replace(/[^0-9-]/g, "");
+  const parsed = Number(digits);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+export const formatMoneyInput = (value: string | number | null | undefined): string => {
+  const raw = String(value ?? "");
+  if (!raw) return "";
+  return new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 }).format(parseMoneyInput(raw));
+};
 
 export const formatDate = (value: string | null | undefined) =>
   value ? new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value}T00:00:00`)) : "-";

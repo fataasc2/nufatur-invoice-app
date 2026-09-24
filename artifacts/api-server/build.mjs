@@ -12,10 +12,12 @@ globalThis.require = createRequire(import.meta.url);
 
 const artifactDir = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
+const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 
 async function buildAll() {
-  await execFileAsync("pnpm", ["--filter", "@workspace/nufatur-web", "run", "build"], {
+  await execFileAsync(pnpmCommand, ["--filter", "@workspace/nufatur-web", "run", "build"], {
     cwd: path.resolve(artifactDir, "../.."),
+    shell: process.platform === "win32",
   });
   const distDir = path.resolve(artifactDir, "dist");
   await rm(distDir, { recursive: true, force: true });

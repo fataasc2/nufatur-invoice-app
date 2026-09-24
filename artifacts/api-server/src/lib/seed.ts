@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db, bankAccounts, companySettings, customers, invoiceItems, invoices, payments } from "@workspace/db";
 import { hashPassword } from "./auth";
+import { getCompanySettings } from "./company-settings";
 
 const companyDefaults = {
   companyName: "PT Nurul Fajar Abinaya",
@@ -13,22 +14,15 @@ const companyDefaults = {
   receiptTitle: "KUITANSI",
   footer: "Terima kasih telah mempercayakan perjalanan Anda kepada NUFATUR.",
   notes: "Harap konfirmasi setelah melakukan pembayaran ke WhatsApp NUFATUR.",
-  adminName: "Admin NUFATUR",
-  adminTitle: "Penanggung Jawab",
-  includeText: "",
-  pdfNotes: `* Pelunasan dilakukan 40 hari sebelum tanggal keberangkatan.
-* Deposit yang sudah kami terima akan hangus dan dianggap tidak melanjutkan blockseat/paket umroh lagi apabila pelunasan tidak sesuai ketentuan diatas dan seat direlease kembali.
-* Kami tidak bertanggung jawab atas ter-CANCEL nya Group Booking yang terjadi dikarenakan keterlambatan pembayaran yang tidak sesuai dengan jatuh tempo/timelimit yang sudah ditentukan tersebut.
-* Perubahan nama hanya bisa dilakukan sebelum issued sebanyak 10% dari total penumpang masing2 group.
-* Data manifest wajib dilengkapi : Nama, Gender, Tgl Lahir, No.Paspor, Exp. Paspor, Issue Paspor.
-* Manifest penumpang tersebut dikirimkan 10 hari sebelum keberangkatan/setelah pelunasan.`,
 };
 
 export async function ensureSeedData(): Promise<void> {
-  let settings = (await db.select().from(companySettings).where(eq(companySettings.id, 1)).limit(1))[0];
+  let settings = await getCompanySettings();
   if (!settings) {
-    settings = (await db.insert(companySettings).values(companyDefaults).returning())[0];
+    await db.insert(companySettings).values(companyDefaults);
+    settings = await getCompanySettings();
   }
+  if (!settings) throw new Error("Unable to load company settings after initialization.");
   if ((await db.select({ id: bankAccounts.id }).from(bankAccounts).limit(1)).length === 0) {
     await db.insert(bankAccounts).values({
       bankName: "Bank Syariah Indonesia (BSI)",

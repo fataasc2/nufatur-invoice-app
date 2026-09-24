@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -15,6 +15,7 @@ import {
   LogOut,
   Menu,
   Pencil,
+  PackageOpen,
   Plus,
   ReceiptText,
   Search,
@@ -24,12 +25,13 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { api, formatDate, money, today, type Bank, type Dashboard, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
+import { api, formatDate, formatMoneyInput, money, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
 
-type View = "dashboard" | "invoices" | "payments" | "receipts" | "settings";
+type View = "dashboard" | "groups" | "invoices" | "payments" | "receipts" | "settings";
 type InvoiceDraft = {
   id?: number;
   number: string;
+  groupId: string;
   invoiceDate: string;
   dueDate: string;
   reference: string;
@@ -47,8 +49,27 @@ type InvoiceDraft = {
 };
 type PaymentDraft = { paymentDate: string; description: string; amount: string; bank: string; method: string; notes: string };
 
+function MoneyInput({ value, onChange, ...props }: { value: string | number; onChange: (value: string) => void } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const displayValue = formatMoneyInput(value);
+  function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const cursor = event.target.selectionStart ?? event.target.value.length;
+    const digitsBeforeCursor = event.target.value.slice(0, cursor).replace(/\D/g, "").length;
+    const raw = event.target.value.replace(/\D/g, "");
+    const nextValue = raw ? String(parseMoneyInput(raw)) : "";
+    onChange(nextValue);
+    const formatted = formatMoneyInput(nextValue);
+    requestAnimationFrame(() => {
+      const nextCursor = formatted.split("").reduce((count, character, index) => count + (/[0-9]/.test(character) && count < digitsBeforeCursor ? 1 : 0), 0);
+      inputRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+  return <input {...props} ref={inputRef} type="text" inputMode="numeric" value={displayValue} onChange={handleChange} />;
+}
+
 const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
   { id: "dashboard", label: "Beranda", icon: Home },
+  { id: "groups", label: "Grup Keberangkatan", icon: PackageOpen },
   { id: "invoices", label: "Invoice", icon: FileText },
   { id: "payments", label: "Pembayaran", icon: WalletCards },
   { id: "receipts", label: "Kuitansi", icon: ReceiptText },
@@ -58,6 +79,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
 const emptyItem = (): Item => ({ description: "", flight: "", details: "", itemDate: today(), quantity: "1", price: "", amount: 0 });
 const emptyDraft = (): InvoiceDraft => ({
   number: "",
+  groupId: "",
   invoiceDate: today(),
   dueDate: today(),
   reference: "",
@@ -82,6 +104,7 @@ function draftFromInvoice(invoice: Invoice): InvoiceDraft {
   return {
     id: invoice.id,
     number: invoice.number,
+    groupId: invoice.groupId ? String(invoice.groupId) : "",
     invoiceDate: invoice.invoiceDate,
     dueDate: invoice.dueDate,
     reference: invoice.reference ?? "",
@@ -196,7 +219,8 @@ function App() {
       {error && <div className="toast error"><CircleAlert size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div>}
       <div className="page-content">
         {view === "dashboard" && <DashboardPage onNavigate={navigate} onNotice={setNotice} onError={setError} />}
-        {view === "invoices" && <InvoicesPage onNotice={setNotice} onError={setError} />}
+          {view === "groups" && <GroupsPage onNotice={setNotice} onError={setError} />}
+        {view === "invoices" && <InvoicesPage onNotice={setNotice} onError={setError} onNavigate={navigate} />}
         {view === "payments" && <PaymentsPage onNotice={setNotice} onError={setError} />}
         {view === "receipts" && <ReceiptsPage onError={setError} />}
         {view === "settings" && <SettingsPage onNotice={setNotice} onError={setError} />}
@@ -233,7 +257,50 @@ function StatCard({ label, value, icon, tone }: { label: string; value: number; 
   return <div className={`stat-card ${tone}`}><div className="stat-icon">{icon}</div><div><span>{label}</span><strong>{value}</strong></div></div>;
 }
 
-function InvoicesPage({ onNotice, onError }: { onNotice: (message: string) => void; onError: (message: string) => void }) {
+type GroupDraft = { id?: number; code: string; name: string; departureDate: string; returnDate: string; packageName: string; notes: string; status: string };
+const emptyGroupDraft = (): GroupDraft => ({ code: "", name: "", departureDate: today(), returnDate: "", packageName: "", notes: "", status: "active" });
+
+function GroupsPage({ onNotice, onError }: { onNotice: (message: string) => void; onError: (message: string) => void }) {
+  const [groups, setGroups] = useState<DepartureGroup[]>([]);
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("Semua");
+  const [draft, setDraft] = useState<GroupDraft | null>(null);
+  const [detail, setDetail] = useState<DepartureGroupDetail | null>(null);
+  const load = () => api<{ groups: DepartureGroup[] }>(`/api/groups?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`).then((result) => setGroups(result.groups)).catch((error) => onError(error.message));
+  useEffect(() => { void load(); }, [search, status]);
+  async function remove(group: DepartureGroup) {
+    if (!window.confirm(`Hapus group ${group.name}?`)) return;
+    try { await api(`/api/groups/${group.id}`, { method: "DELETE" }); onNotice("Group berhasil dihapus."); void load(); } catch (error) { onError(error instanceof Error ? error.message : "Gagal menghapus group."); }
+  }
+  async function openDetail(group: DepartureGroup) {
+    try { const result = await api<{ group: DepartureGroupDetail }>(`/api/groups/${group.id}`); setDetail(result.group); } catch (error) { onError(error instanceof Error ? error.message : "Gagal membuka detail group."); }
+  }
+  return <>
+    <PageIntro eyebrow="PERJALANAN" title="Grup Keberangkatan" description="Kelola paket dan invoice berdasarkan keberangkatan." action={<button className="button primary" onClick={() => setDraft(emptyGroupDraft())}><Plus size={18} />Tambah Grup</button>} />
+    <div className="toolbar"><div className="search-box"><Search size={18} /><input placeholder="Cari kode, nama, atau paket..." value={search} onChange={(event) => setSearch(event.target.value)} /></div><div className="filter-tabs">{[["Semua", "Semua"], ["Aktif", "active"], ["Selesai", "completed"], ["Dibatalkan", "cancelled"]].map(([label, value]) => <button key={value} className={status === value ? "active" : ""} onClick={() => setStatus(value)}>{label}</button>)}</div></div>
+    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Group</th><th>Keberangkatan</th><th>Pulang</th><th>Paket</th><th>Status</th><th /></tr></thead><tbody>{groups.map((group) => <tr key={group.id} className="clickable" onClick={() => void openDetail(group)}><td><strong className="table-primary">{group.name}</strong><small>{group.code}</small></td><td>{formatDate(group.departureDate)}</td><td>{formatDate(group.returnDate)}</td><td>{group.packageName}</td><td><span className={`status ${statusClass(group.status)}`}>{group.status === "active" ? "Aktif" : group.status === "completed" ? "Selesai" : "Dibatalkan"}</span></td><td><div className="row-actions"><button className="icon-button" title="Edit" onClick={(event) => { event.stopPropagation(); setDraft({ ...group, returnDate: group.returnDate ?? "", notes: group.notes ?? "" }); }}><Pencil size={16} /></button><button className="icon-button danger-icon" title="Hapus" onClick={(event) => { event.stopPropagation(); void remove(group); }}><Trash2 size={16} /></button></div></td></tr>)}</tbody></table>{groups.length === 0 && <div className="empty-state"><PackageOpen size={26} /><h3>Belum ada group</h3><p>Tambahkan grup keberangkatan untuk menghubungkannya ke invoice.</p></div>}</div></section>
+    {draft && <GroupForm initial={draft} onClose={() => setDraft(null)} onSaved={() => { setDraft(null); onNotice("Group berhasil disimpan."); void load(); }} onError={onError} />}
+    {detail && <GroupDetail group={detail} onClose={() => setDetail(null)} />}
+  </>;
+}
+
+function GroupForm({ initial, onClose, onSaved, onError }: { initial: GroupDraft; onClose: () => void; onSaved: () => void; onError: (message: string) => void }) {
+  const [draft, setDraft] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (!draft.code.trim() || !draft.name.trim() || !draft.departureDate || !draft.packageName.trim()) { onError("Kode, nama group, tanggal keberangkatan, dan paket wajib diisi."); return; }
+    setBusy(true);
+    try { await api(draft.id ? `/api/groups/${draft.id}` : "/api/groups", { method: draft.id ? "PATCH" : "POST", body: JSON.stringify(draft) }); onSaved(); } catch (error) { onError(error instanceof Error ? error.message : "Gagal menyimpan group."); } finally { setBusy(false); }
+  }
+  return <Modal title={draft.id ? "Edit Grup Keberangkatan" : "Tambah Grup Keberangkatan"} onClose={onClose}><form className="form-content" onSubmit={save}><div className="form-grid two"><label>Kode Group<input required value={draft.code} onChange={(event) => setDraft({ ...draft, code: event.target.value })} /></label><label>Nama Group<input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Tanggal Keberangkatan<input required type="date" value={draft.departureDate} onChange={(event) => setDraft({ ...draft, departureDate: event.target.value })} /></label><label>Tanggal Pulang<input type="date" value={draft.returnDate} onChange={(event) => setDraft({ ...draft, returnDate: event.target.value })} /></label><label>Paket<input required value={draft.packageName} onChange={(event) => setDraft({ ...draft, packageName: event.target.value })} /></label><label>Status<select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}><option value="active">Aktif</option><option value="completed">Selesai</option><option value="cancelled">Dibatalkan</option></select></label><label className="span-two">Keterangan<textarea rows={3} value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} /></label></div><div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan Group"}</button></div></form></Modal>;
+}
+
+function GroupDetail({ group, onClose }: { group: DepartureGroupDetail; onClose: () => void }) {
+  return <Modal title={group.name} onClose={onClose} wide><div className="detail-body"><div className="detail-top"><div><p className="eyebrow">{group.code}</p><h3>{group.packageName}</h3><p>{formatDate(group.departureDate)}{group.returnDate ? ` sampai ${formatDate(group.returnDate)}` : ""}</p></div><span className={`status ${statusClass(group.status)}`}>{group.status === "active" ? "Aktif" : group.status === "completed" ? "Selesai" : "Dibatalkan"}</span></div><div className="detail-metrics"><div><span>Jumlah invoice</span><strong>{group.invoiceCount}</strong></div><div><span>Total invoice</span><strong>{money(group.invoiceTotal)}</strong></div><div><span>Total payment</span><strong className="green-text">{money(group.paymentTotal)}</strong></div><div><span>Remaining balance</span><strong className="orange-text">{money(group.remainingTotal)}</strong></div></div><div className="detail-section"><div className="section-heading"><h3>Invoice dalam group</h3></div><div className="table-wrap"><table><thead><tr><th>Invoice Number</th><th>Customer</th><th>Total Invoice</th><th>Payment</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{group.invoices.map((invoice) => <tr key={invoice.id}><td>{invoice.number}</td><td>{invoice.customerName}</td><td>{money(invoice.total)}</td><td>{money(invoice.paid)}</td><td>{money(invoice.remaining)}</td><td><span className={`status ${statusClass(invoice.status)}`}>{invoice.status}</span></td></tr>)}</tbody></table></div></div></div></Modal>;
+}
+
+function InvoicesPage({ onNotice, onError, onNavigate }: { onNotice: (message: string) => void; onError: (message: string) => void; onNavigate: (view: View) => void }) {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("Semua");
@@ -251,7 +318,7 @@ function InvoicesPage({ onNotice, onError }: { onNotice: (message: string) => vo
     <PageIntro eyebrow="PENGELOLAAN TAGIHAN" title="Invoice" description="Buat, pantau, dan kelola seluruh tagihan NUFATUR." action={<div className="intro-actions"><a className="button secondary" href="/api/export/invoices.csv"><ArrowDownToLine size={17} />Export CSV</a><button className="button primary" onClick={() => { setEditing(emptyDraft()); setFormOpen(true); }}><Plus size={18} />Buat invoice</button></div>} />
     <div className="toolbar"><div className="search-box"><Search size={18} /><input placeholder="Cari nomor atau customer..." value={search} onChange={(event) => setSearch(event.target.value)} /></div><div className="filter-tabs">{["Semua", "Belum Lunas", "Lunas", "Jatuh Tempo", "Draft"].map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div></div>
     <section className="panel table-panel"><InvoiceTable invoices={invoices} onOpen={setDetail} onEdit={(invoice) => { setEditing(draftFromInvoice(invoice)); setFormOpen(true); }} onDelete={remove} /></section>
-    {formOpen && editing && <InvoiceForm initial={editing} onClose={() => setFormOpen(false)} onSaved={() => { setFormOpen(false); onNotice(editing.id ? "Invoice berhasil diperbarui." : "Invoice berhasil dibuat."); void load(); }} onError={onError} />}
+    {formOpen && editing && <InvoiceForm initial={editing} onClose={() => setFormOpen(false)} onCreateGroup={() => { setFormOpen(false); onNavigate("groups"); }} onSaved={() => { setFormOpen(false); onNotice(editing.id ? "Invoice berhasil diperbarui." : "Invoice berhasil dibuat."); void load(); }} onError={onError} />}
     {detail && <InvoiceDetail invoice={detail} onClose={() => setDetail(null)} onEdit={() => { setEditing(draftFromInvoice(detail)); setFormOpen(true); setDetail(null); }} onDelete={() => void remove(detail)} onPayment={() => setPaymentFor(detail)} onRefresh={(updated) => { setDetail(updated); void load(); }} onNotice={onNotice} onError={onError} />}
     {paymentFor && <PaymentForm invoice={paymentFor} onClose={() => setPaymentFor(null)} onSaved={(updated) => { setPaymentFor(null); setDetail(updated); onNotice("Pembayaran berhasil dicatat."); void load(); }} onError={onError} />}
   </>;
@@ -262,26 +329,29 @@ function InvoiceTable({ invoices, compact = false, onOpen, onEdit, onDelete }: {
   return <div className="table-wrap"><table><thead><tr><th>Invoice</th><th>Customer</th><th>Tanggal</th><th>Total</th><th>Status</th><th /></tr></thead><tbody>{invoices.slice(0, compact ? 5 : undefined).map((invoice) => <tr key={invoice.id} onClick={() => onOpen?.(invoice)} className={onOpen ? "clickable" : ""}><td><strong className="table-primary">{invoice.number}</strong><small>{invoice.reference || "Tanpa referensi"}</small></td><td>{invoice.customerName}</td><td>{formatDate(invoice.invoiceDate)}</td><td><strong>{money(invoice.total)}</strong><small>Sisa {money(invoice.remaining)}</small></td><td><span className={`status ${statusClass(invoice.status)}`}>{invoice.status}</span></td><td>{(onEdit || onDelete) && <div className="row-actions"><button className="icon-button" title="Edit" onClick={(event) => { event.stopPropagation(); onEdit?.(invoice); }}><Pencil size={16} /></button><button className="icon-button danger-icon" title="Hapus" onClick={(event) => { event.stopPropagation(); onDelete?.(invoice); }}><Trash2 size={16} /></button></div>}</td></tr>)}</tbody></table></div>;
 }
 
-function InvoiceForm({ initial, onClose, onSaved, onError }: { initial: InvoiceDraft; onClose: () => void; onSaved: () => void; onError: (message: string) => void }) {
+function InvoiceForm({ initial, onClose, onCreateGroup, onSaved, onError }: { initial: InvoiceDraft; onClose: () => void; onCreateGroup: () => void; onSaved: () => void; onError: (message: string) => void }) {
   const [draft, setDraft] = useState(initial);
+  const [groups, setGroups] = useState<DepartureGroup[]>([]);
   const [busy, setBusy] = useState(false);
+  useEffect(() => { api<{ groups: DepartureGroup[] }>("/api/groups?status=active").then((result) => setGroups(result.groups)).catch((error) => onError(error.message)); }, [onError]);
   const update = <K extends keyof InvoiceDraft>(key: K, value: InvoiceDraft[K]) => setDraft((current) => ({ ...current, [key]: value }));
-  const computedSubtotal = draft.items.reduce((sum, item) => sum + (Number(item.quantity) && Number(item.price) ? Number(item.quantity) * Number(item.price) : Number(item.amount) || 0), 0);
-  const total = Math.max(0, computedSubtotal - Number(draft.discount || 0) + Number(draft.additionalCost || 0) + Number(draft.tax || 0));
+    const computedSubtotal = draft.items.reduce((sum, item) => sum + (Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount)), 0);
+  const total = Math.max(0, computedSubtotal - parseMoneyInput(draft.discount) + parseMoneyInput(draft.additionalCost) + parseMoneyInput(draft.tax));
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (!draft.customerName.trim()) { onError("Nama customer wajib diisi."); return; }
+    if (!draft.groupId) { onError("Pilih Grup Keberangkatan terlebih dahulu."); return; }
     if (!draft.items.some((item) => item.description.trim())) { onError("Tambahkan minimal satu item invoice."); return; }
     setBusy(true);
-    const payload = { ...draft, items: draft.items.map((item) => ({ ...item, amount: Number(item.quantity) && Number(item.price) ? Number(item.quantity) * Number(item.price) : Number(item.amount) || 0 })) };
+    const payload = { ...draft, groupId: Number(draft.groupId), discount: parseMoneyInput(draft.discount), additionalCost: parseMoneyInput(draft.additionalCost), tax: parseMoneyInput(draft.tax), items: draft.items.map((item) => ({ ...item, price: parseMoneyInput(item.price), amount: Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount) })) };
     try { await api(draft.id ? `/api/invoices/${draft.id}` : "/api/invoices", { method: draft.id ? "PUT" : "POST", body: JSON.stringify(payload) }); onSaved(); } catch (error) { onError(error instanceof Error ? error.message : "Gagal menyimpan invoice."); } finally { setBusy(false); }
   }
   function updateItem(index: number, patch: Partial<Item>) {
     setDraft((current) => ({ ...current, items: current.items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) }));
   }
   return <Modal title={draft.id ? "Edit invoice" : "Buat invoice baru"} onClose={onClose} wide><form onSubmit={save} className="form-content">
-    <div className="form-section"><div className="section-heading"><h3>Informasi invoice</h3><span>Semua tanggal menggunakan zona waktu lokal.</span></div><div className="form-grid four"><label>Nomor invoice<input value={draft.number} onChange={(event) => update("number", event.target.value)} placeholder="Kosongkan untuk nomor otomatis" /></label><label>Tanggal<input type="date" value={draft.invoiceDate} onChange={(event) => update("invoiceDate", event.target.value)} /></label><label>Jatuh tempo<input type="date" value={draft.dueDate} onChange={(event) => update("dueDate", event.target.value)} /></label><label>Jenis customer<select value={draft.customerType} onChange={(event) => update("customerType", event.target.value)}><option>Perusahaan</option><option>Instansi</option><option>Keluarga</option><option>Perorangan</option></select></label></div><div className="form-grid two"><label>Nama customer / perusahaan<input required value={draft.customerName} onChange={(event) => update("customerName", event.target.value)} /></label><label>Reference<input value={draft.reference} onChange={(event) => update("reference", event.target.value)} placeholder="Contoh: Paket wisata keluarga" /></label><label>WhatsApp<input value={draft.customerWhatsapp} onChange={(event) => update("customerWhatsapp", event.target.value)} /></label><label>Email<input type="email" value={draft.customerEmail} onChange={(event) => update("customerEmail", event.target.value)} /></label><label className="span-two">Alamat<textarea value={draft.customerAddress} onChange={(event) => update("customerAddress", event.target.value)} rows={2} /></label></div></div>
-    <div className="form-section"><div className="section-heading"><h3>Detail invoice</h3><button type="button" className="button small secondary" onClick={() => setDraft((current) => ({ ...current, items: [...current.items, emptyItem()] }))}><Plus size={15} />Tambah item</button></div><div className="item-editor">{draft.items.map((item, index) => <div className="item-row" key={index}><div className="item-row-number">{index + 1}</div><label>Deskripsi<input value={item.description} onChange={(event) => updateItem(index, { description: event.target.value })} /></label><label>Qty / Pax<input type="number" min="0" value={item.quantity ?? ""} onChange={(event) => updateItem(index, { quantity: event.target.value })} /></label><label>Harga<input type="number" min="0" value={item.price ?? ""} onChange={(event) => updateItem(index, { price: event.target.value })} /></label><label>Tanggal<input type="date" value={item.itemDate ?? ""} onChange={(event) => updateItem(index, { itemDate: event.target.value })} /></label><strong className="item-amount">{money(Number(item.quantity) && Number(item.price) ? Number(item.quantity) * Number(item.price) : Number(item.amount) || 0)}</strong><button type="button" className="icon-button danger-icon" disabled={draft.items.length === 1} onClick={() => setDraft((current) => ({ ...current, items: current.items.filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 size={16} /></button><label className="item-detail">Flight / keterangan<textarea value={item.details ?? ""} onChange={(event) => updateItem(index, { details: event.target.value })} rows={1} placeholder="Opsional" /></label></div>)}</div><div className="totals-editor"><div><span>Subtotal</span><strong>{money(computedSubtotal)}</strong></div><label>Discount<input type="number" min="0" value={draft.discount} onChange={(event) => update("discount", event.target.value)} /></label><label>Biaya tambahan<input type="number" min="0" value={draft.additionalCost} onChange={(event) => update("additionalCost", event.target.value)} /></label><label>Pajak<input type="number" min="0" value={draft.tax} onChange={(event) => update("tax", event.target.value)} /></label><div className="total-highlight"><span>Total invoice</span><strong>{money(total)}</strong></div></div></div>
+    <div className="form-section"><div className="section-heading"><h3>Informasi invoice</h3><span>Group menjadi sumber utama tanggal keberangkatan.</span></div><div className="form-grid four"><label>Nomor invoice<input value={draft.number} onChange={(event) => update("number", event.target.value)} placeholder="Kosongkan untuk nomor otomatis" /></label><label>Tanggal<input type="date" value={draft.invoiceDate} onChange={(event) => update("invoiceDate", event.target.value)} /></label><label>Jatuh tempo<input type="date" value={draft.dueDate} onChange={(event) => update("dueDate", event.target.value)} /></label><label>Jenis customer<select value={draft.customerType} onChange={(event) => update("customerType", event.target.value)}><option>Perusahaan</option><option>Instansi</option><option>Keluarga</option><option>Perorangan</option></select></label></div><div className="form-grid two"><label>Grup Keberangkatan<select required value={draft.groupId} onChange={(event) => update("groupId", event.target.value)}><option value="">Pilih Grup Keberangkatan</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name} - {formatDate(group.departureDate)}</option>)}</select><button type="button" className="text-button" onClick={onCreateGroup}><Plus size={14} />Tambah Grup Keberangkatan</button>{draft.groupId && (() => { const group = groups.find((item) => String(item.id) === draft.groupId); return group ? <small>{formatDate(group.departureDate)} • {group.packageName}</small> : null; })()}</label><label>Nama customer / perusahaan<input required value={draft.customerName} onChange={(event) => update("customerName", event.target.value)} /></label><label>Reference<input value={draft.reference} onChange={(event) => update("reference", event.target.value)} placeholder="Contoh: Paket wisata keluarga" /></label><label>WhatsApp<input value={draft.customerWhatsapp} onChange={(event) => update("customerWhatsapp", event.target.value)} /></label><label>Email<input type="email" value={draft.customerEmail} onChange={(event) => update("customerEmail", event.target.value)} /></label><label className="span-two">Alamat<textarea value={draft.customerAddress} onChange={(event) => update("customerAddress", event.target.value)} rows={2} /></label></div></div>
+    <div className="form-section"><div className="section-heading"><h3>Detail invoice</h3><button type="button" className="button small secondary" onClick={() => setDraft((current) => ({ ...current, items: [...current.items, emptyItem()] }))}><Plus size={15} />Tambah item</button></div><div className="item-editor">{draft.items.map((item, index) => <div className="item-row" key={index}><div className="item-row-number">{index + 1}</div><label>Deskripsi<input value={item.description} onChange={(event) => updateItem(index, { description: event.target.value })} /></label><label>Qty / Pax<input type="number" min="0" value={item.quantity ?? ""} onChange={(event) => updateItem(index, { quantity: event.target.value })} /></label><label>Harga<MoneyInput min="0" value={item.price ?? ""} onChange={(value) => updateItem(index, { price: value })} /></label><label>Tanggal<input type="date" value={item.itemDate ?? ""} onChange={(event) => updateItem(index, { itemDate: event.target.value })} /></label><strong className="item-amount">{money(Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount))}</strong><button type="button" className="icon-button danger-icon" disabled={draft.items.length === 1} onClick={() => setDraft((current) => ({ ...current, items: current.items.filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 size={16} /></button><label className="item-detail">Flight / keterangan<textarea value={item.details ?? ""} onChange={(event) => updateItem(index, { details: event.target.value })} rows={1} placeholder="Opsional" /></label></div>)}</div><div className="totals-editor"><div><span>Subtotal</span><strong>{money(computedSubtotal)}</strong></div><label>Discount<MoneyInput min="0" value={draft.discount} onChange={(value) => update("discount", value)} /></label><label>Biaya tambahan<MoneyInput min="0" value={draft.additionalCost} onChange={(value) => update("additionalCost", value)} /></label><label>Pajak<MoneyInput min="0" value={draft.tax} onChange={(value) => update("tax", value)} /></label><div className="total-highlight"><span>Total invoice</span><strong>{money(total)}</strong></div></div></div>
     <div className="form-section"><div className="form-grid two"><label>Include PDF<textarea value={draft.includeText} onChange={(event) => update("includeText", event.target.value)} rows={4} placeholder={"Contoh:\n• Tiket Pesawat\n• Hotel\n• Transportasi"} /></label><label>Catatan invoice<textarea value={draft.notes} onChange={(event) => update("notes", event.target.value)} rows={4} placeholder="Catatan tambahan untuk customer atau tim..." /></label></div></div>
     <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : draft.id ? "Simpan perubahan" : "Simpan invoice"}</button></div>
   </form></Modal>;
@@ -299,9 +369,9 @@ function PaymentForm({ invoice, onClose, onSaved, onError }: { invoice: Invoice;
   async function save(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    try { const result = await api<{ invoice: Invoice }>(`/api/invoices/${invoice.id}/payments`, { method: "POST", body: JSON.stringify(draft) }); onSaved(result.invoice); } catch (error) { onError(error instanceof Error ? error.message : "Gagal mencatat pembayaran."); } finally { setBusy(false); }
+    try { const result = await api<{ invoice: Invoice }>(`/api/invoices/${invoice.id}/payments`, { method: "POST", body: JSON.stringify({ ...draft, amount: parseMoneyInput(draft.amount) }) }); onSaved(result.invoice); } catch (error) { onError(error instanceof Error ? error.message : "Gagal mencatat pembayaran."); } finally { setBusy(false); }
   }
-  return <Modal title="Tambah pembayaran" onClose={onClose}><form className="form-content" onSubmit={save}><div className="payment-summary"><span>Sisa tagihan saat ini</span><strong>{money(invoice.remaining)}</strong></div><label>Tanggal<input required type="date" value={draft.paymentDate} onChange={(event) => setDraft({ ...draft, paymentDate: event.target.value })} /></label><label>Deskripsi<input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label><label>Nominal<input required type="number" min="0" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} /></label><div className="form-grid two"><label>Bank<input value={draft.bank} onChange={(event) => setDraft({ ...draft, bank: event.target.value })} placeholder="Contoh: BSI" /></label><label>Metode<select value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}><option>Transfer</option><option>Cash</option><option>QRIS</option><option>Lainnya</option></select></label></div><label>Keterangan<textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} rows={2} /></label><div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan pembayaran"}</button></div></form></Modal>;
+  return <Modal title="Tambah pembayaran" onClose={onClose}><form className="form-content" onSubmit={save}><div className="payment-summary"><span>Sisa tagihan saat ini</span><strong>{money(invoice.remaining)}</strong></div><label>Tanggal<input required type="date" value={draft.paymentDate} onChange={(event) => setDraft({ ...draft, paymentDate: event.target.value })} /></label><label>Deskripsi<input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label><label>Nominal<MoneyInput required min="0" value={draft.amount} onChange={(value) => setDraft({ ...draft, amount: value })} /></label><div className="form-grid two"><label>Bank<input value={draft.bank} onChange={(event) => setDraft({ ...draft, bank: event.target.value })} placeholder="Contoh: BSI" /></label><label>Metode<select value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}><option>Transfer</option><option>Cash</option><option>QRIS</option><option>Lainnya</option></select></label></div><label>Keterangan<textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} rows={2} /></label><div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan pembayaran"}</button></div></form></Modal>;
 }
 
 function PaymentsPage({ onNotice, onError }: { onNotice: (message: string) => void; onError: (message: string) => void }) {

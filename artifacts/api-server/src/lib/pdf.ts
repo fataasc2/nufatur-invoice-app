@@ -5,7 +5,28 @@ import { money, numberValue } from "./format";
 const LEFT = 42;
 const RIGHT = 553;
 const CONTENT_WIDTH = RIGHT - LEFT;
-const FOOTER_Y = 770;
+const FOOTER_Y = 790;
+const CONTENT_BOTTOM = 790;
+const SIGNATURE_RESERVE = 106;
+const SIGNATURE_GAP = 14;
+const CONTINUATION_CONTENT_TOP = 88;
+const INVOICE_SLOTS = {
+  customerY: 172,
+  departureY: 221,
+  tableY: 258,
+  tableRowHeight: 30,
+  pageOneRows: 2,
+  continuationTableY: 110,
+  continuationRows: 15,
+  includeY: 344,
+  includeHeight: 42,
+  summaryY: 360,
+  paymentY: 480,
+  bankY: 540,
+  notesY: 580,
+  notesHeight: 95,
+  signatureY: 684,
+} as const;
 const DEFAULT_PDF_NOTES = `* Pelunasan dilakukan 40 hari sebelum tanggal keberangkatan.
 * Deposit yang sudah kami terima akan hangus dan dianggap tidak melanjutkan blockseat/paket umroh lagi apabila pelunasan tidak sesuai ketentuan diatas dan seat direlease kembali.
 * Kami tidak bertanggung jawab atas ter-CANCEL nya Group Booking yang terjadi dikarenakan keterlambatan pembayaran yang tidak sesuai dengan jatuh tempo/timelimit yang sudah ditentukan tersebut.
@@ -52,6 +73,7 @@ type PdfInvoice = {
   paid: number;
   remaining: number;
   status: string;
+  group?: { name: string; departureDate: string; packageName: string } | null;
 };
 
 type PdfReceipt = {
@@ -71,6 +93,11 @@ type PdfReceipt = {
   tax: number;
   cashback: number;
   total: number;
+  paid: number;
+  remaining: number;
+  status: string;
+  departureDate?: string | null;
+  groupName?: string | null;
 };
 
 function imageBuffer(dataUrl?: string | null): Buffer | null {
@@ -127,14 +154,22 @@ function noteText(company: PdfCompany, custom?: string | null): string {
   return [nonEmpty(company.pdfNotes) || DEFAULT_PDF_NOTES, nonEmpty(custom)].filter(Boolean).join("\n\n");
 }
 
-function drawBrandHeader(doc: PDFKit.PDFDocument, company: PdfCompany, title: string, continuation = false): void {
-  addLogo(doc, company, LEFT, 28, [138, 48]);
-  doc.font("Helvetica").fontSize(8).fillColor("#52616a").text(company.companyName, LEFT, 82);
-  doc.text(company.address, LEFT, 95, { width: 255, lineGap: 2 });
-  doc.text(`WhatsApp: ${company.whatsapp}  •  ${company.email}`, LEFT, 126);
-  doc.text(company.website, LEFT, 139);
-  doc.font("Helvetica-Bold").fontSize(24).fillColor("#16394b").text(title, 350, 35, { width: 203, align: "right" });
-  if (continuation) doc.font("Helvetica").fontSize(8).fillColor("#52616a").text("Lanjutan dokumen", 350, 68, { width: 203, align: "right" });
+function drawBrandHeader(doc: PDFKit.PDFDocument, company: PdfCompany, title: string, continuation = false, documentNumber = ""): void {
+  if (continuation) {
+    addLogo(doc, company, LEFT, 24, [82, 28]);
+    doc.font("Helvetica-Bold").fontSize(16).fillColor("#16394b").text(title, 350, 27, { width: 203, align: "right" });
+    doc.font("Helvetica").fontSize(8).fillColor("#52616a").text(`${documentNumber}  •  Lanjutan`, 320, 48, { width: 233, align: "right" });
+    line(doc, 55);
+    doc.font("Helvetica").fontSize(7).fillColor("#6b7d86").text("DOKUMEN NUFATUR", LEFT, 62);
+    return;
+  }
+  addLogo(doc, company, LEFT, 24, [120, 42]);
+  doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#52616a").text(company.companyName, LEFT, 70, { width: 270 });
+  doc.font("Helvetica").fontSize(7.5).text(company.address, LEFT, 82, { width: 270, height: 36, lineGap: 1.5 });
+  doc.text(`WhatsApp: ${company.whatsapp}`, LEFT, 123, { width: 270 });
+  doc.text(company.email, LEFT, 134, { width: 270 });
+  doc.text(company.website, LEFT, 145, { width: 270 });
+  doc.font("Helvetica-Bold").fontSize(22).fillColor("#16394b").text(title, 350, 30, { width: 203, align: "right" });
 }
 
 function drawInvoiceTableHeader(doc: PDFKit.PDFDocument, y: number): number {
@@ -149,58 +184,217 @@ function drawInvoiceTableHeader(doc: PDFKit.PDFDocument, y: number): number {
   return y + 22;
 }
 
-function newInvoicePage(doc: PDFKit.PDFDocument, company: PdfCompany): number {
+function drawInvoiceItemRow(doc: PDFKit.PDFDocument, item: PdfInvoice["items"][number], y: number, height = INVOICE_SLOTS.tableRowHeight): void {
+  const description = [item.description, item.flight, item.details].filter(Boolean).join("\n");
+  const tableX = [42, 250, 326, 382, 448, 553];
+  doc.rect(LEFT, y, CONTENT_WIDTH, height).strokeColor("#cad6dc").stroke();
+  for (let index = 1; index < tableX.length - 1; index += 1) doc.moveTo(tableX[index], y).lineTo(tableX[index], y + height).strokeColor("#cad6dc").stroke();
+  doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(description || "-", 48, y + 6, { width: 196, height: height - 8, lineGap: 1, ellipsis: true });
+  doc.text(item.price ? money(item.price) : "-", 255, y + 6, { width: 66, align: "right" });
+  doc.text(displayQty(item.quantity), 331, y + 6, { width: 46, align: "center" });
+  doc.text(item.itemDate ?? "-", 387, y + 6, { width: 56, align: "center" });
+  doc.font("Helvetica-Bold").text(money(item.amount), 453, y + 6, { width: 94, align: "right" });
+}
+
+function drawEmptyInvoiceRow(doc: PDFKit.PDFDocument, y: number): void {
+  drawInvoiceItemRow(doc, { description: "", amount: "0" }, y);
+}
+
+function drawFixedInclude(doc: PDFKit.PDFDocument, text: string, y: number, height: number = INVOICE_SLOTS.includeHeight): void {
+  doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 4).fill("#f4f8f9");
+  doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#244b5e").text("INCLUDE", LEFT + 9, y + 7);
+  doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(text || "-", LEFT + 76, y + 7, { width: 415, height: height - 12, lineGap: 1 });
+}
+
+function drawFixedPaymentSlot(doc: PDFKit.PDFDocument, payments: PdfInvoice["payments"]): void {
+  const y = INVOICE_SLOTS.paymentY;
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("PAYMENT HISTORY", LEFT, y);
+  doc.rect(LEFT, y + 13, CONTENT_WIDTH, 35).strokeColor("#cad6dc").stroke();
+  if (payments.length === 0) {
+    doc.font("Helvetica").fontSize(7.5).fillColor("#52616a").text("Belum ada pembayaran", LEFT + 7, y + 26);
+    return;
+  }
+  payments.slice(0, 2).forEach((payment, index) => {
+    const rowY = y + 20 + index * 15;
+    doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(payment.description, LEFT + 7, rowY, { width: 205, ellipsis: true });
+    doc.text(payment.paymentDate, 300, rowY, { width: 70 });
+    doc.text(payment.bank ?? payment.method, 380, rowY, { width: 70, ellipsis: true });
+    doc.font("Helvetica-Bold").text(money(payment.amount), 453, rowY, { width: 94, align: "right" });
+  });
+}
+
+function drawPaymentContinuation(doc: PDFKit.PDFDocument, payments: PdfInvoice["payments"]): void {
+  if (payments.length < 2) return;
+  const y = 400;
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("PAYMENT HISTORY (LANJUTAN)", LEFT, y);
+  payments.slice(1, 4).forEach((payment, index) => {
+    const rowY = y + 13 + index * 19;
+    doc.rect(LEFT, rowY, CONTENT_WIDTH, 19).strokeColor("#cad6dc").stroke();
+    doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(payment.description, 48, rowY + 5, { width: 205, height: 12, ellipsis: true });
+    doc.text(payment.paymentDate, 300, rowY + 5, { width: 70 });
+    doc.text(payment.bank ?? payment.method, 380, rowY + 5, { width: 70, height: 12, ellipsis: true });
+    doc.font("Helvetica-Bold").text(money(payment.amount), 453, rowY + 5, { width: 94, align: "right" });
+  });
+}
+
+function drawFixedBank(doc: PDFKit.PDFDocument, company: PdfCompany): void {
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("BANK NUFATUR", LEFT, INVOICE_SLOTS.bankY);
+  doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(company.notes || "-", LEFT, INVOICE_SLOTS.bankY + 15, { width: CONTENT_WIDTH, height: 22, lineGap: 1, ellipsis: true });
+}
+
+function drawFixedNotes(doc: PDFKit.PDFDocument, text: string, y: number = INVOICE_SLOTS.notesY, height: number = INVOICE_SLOTS.notesHeight, title = "CATATAN / PERHATIAN"): void {
+  doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 4).fill("#fff4bf");
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#674f00").text(title, LEFT + 9, y + 7);
+  doc.font("Helvetica").fontSize(6.4).fillColor("#3d3520").text(text || "-", LEFT + 9, y + 17, { width: CONTENT_WIDTH - 18, height: height - 20, lineGap: 0 });
+}
+
+function newInvoicePage(doc: PDFKit.PDFDocument, company: PdfCompany, documentNumber: string): number {
   doc.addPage();
-  drawBrandHeader(doc, company, company.invoiceTitle || "INVOICE", true);
-  return 102;
+  drawBrandHeader(doc, company, company.invoiceTitle || "INVOICE", true, documentNumber);
+  return CONTINUATION_CONTENT_TOP;
 }
 
 function drawInclude(doc: PDFKit.PDFDocument, includeText: string, y: number): number {
-  const height = Math.max(34, doc.heightOfString(includeText, { width: 490, lineGap: 2 }) + 24);
-  doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 5).fill("#f4f8f9");
-  doc.font("Helvetica-Bold").fontSize(8).fillColor("#244b5e").text("INCLUDE", LEFT + 10, y + 8);
-  doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(includeText, LEFT + 10, y + 21, { width: 490, lineGap: 2 });
-  return y + height + 14;
+  const height = Math.max(29, doc.heightOfString(includeText, { width: 415, lineGap: 1 }) + 18);
+  doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 4).fill("#f4f8f9");
+  doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#244b5e").text("INCLUDE", LEFT + 9, y + 7);
+  doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(includeText, LEFT + 76, y + 7, { width: 415, lineGap: 1 });
+  return y + height + 8;
 }
 
 function drawSummary(doc: PDFKit.PDFDocument, rows: Array<[string, string]>, y: number): number {
   rows.forEach(([label, value]) => {
-    doc.rect(LEFT, y, CONTENT_WIDTH, 22).fill(label === "TOTAL" ? "#e7f0f4" : "#fbf3c4");
-    doc.font("Helvetica-Bold").fontSize(label === "TOTAL" ? 9 : 8).fillColor("#244b5e").text(label, 330, y + 7);
-    doc.text(value, 453, y + 7, { width: 94, align: "right" });
-    y += 22;
+    const emphasis = label === "TOTAL INVOICE" || label === "SISA PEMBAYARAN" || label === "STATUS";
+    doc.font("Helvetica-Bold").fontSize(emphasis ? 8.5 : 8).fillColor("#244b5e").text(label, 330, y + 4);
+    doc.font(emphasis ? "Helvetica-Bold" : "Helvetica").fillColor(emphasis ? "#16394b" : "#1c2a32").text(value, 453, y + 4, { width: 94, align: "right" });
+    doc.moveTo(330, y + 14).lineTo(RIGHT, y + 14).strokeColor("#d5dde2").lineWidth(0.5).stroke();
+    y += 16;
   });
   return y;
 }
 
-function drawNotes(doc: PDFKit.PDFDocument, text: string, y: number): number {
-  const height = noteHeight(doc, text);
-  doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 5).fill("#fff4bf");
-  doc.font("Helvetica-Bold").fontSize(9).fillColor("#674f00").text("CATATAN / PERHATIAN", LEFT + 10, y + 9);
-  doc.font("Helvetica").fontSize(8).fillColor("#3d3520").text(text, LEFT + 10, y + 24, { width: 491, lineGap: 2 });
-  return y + height + 16;
+function drawFixedSummary(doc: PDFKit.PDFDocument, rows: Array<[string, string]>, y: number): number {
+  rows.forEach(([label, value]) => {
+    const emphasis = label === "TOTAL INVOICE" || label === "SISA PEMBAYARAN" || label === "STATUS";
+    doc.font("Helvetica-Bold").fontSize(emphasis ? 8.5 : 8).fillColor("#244b5e").text(label, 330, y + 4);
+    doc.font(emphasis ? "Helvetica-Bold" : "Helvetica").fillColor(emphasis ? "#16394b" : "#1c2a32").text(value, 453, y + 4, { width: 94, align: "right" });
+    doc.moveTo(330, y + 13).lineTo(RIGHT, y + 13).strokeColor("#d5dde2").lineWidth(0.5).stroke();
+    y += 14;
+  });
+  return y;
 }
 
-function noteHeight(doc: PDFKit.PDFDocument, text: string): number {
-  return Math.max(48, doc.heightOfString(text, { width: 491, lineGap: 2 }) + 28);
+function drawNotes(doc: PDFKit.PDFDocument, text: string, y: number, width = CONTENT_WIDTH, title = "CATATAN / PERHATIAN"): number {
+  const height = noteHeight(doc, text, width - 18);
+  doc.roundedRect(LEFT, y, width, height, 4).fill("#fff4bf");
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#674f00").text(title, LEFT + 9, y + 7);
+  doc.font("Helvetica").fontSize(6.8).fillColor("#3d3520").text(text, LEFT + 9, y + 19, { width: width - 18, lineGap: 0 });
+  return y + height + 8;
+}
+
+function noteHeight(doc: PDFKit.PDFDocument, text: string, width = 491): number {
+  return Math.max(36, doc.heightOfString(text, { width, lineGap: 0 }) + 20);
+}
+
+function splitTextToFit(doc: PDFKit.PDFDocument, text: string, width: number, maxHeight: number): [string, string] {
+  if (doc.heightOfString(text, { width, lineGap: 0 }) <= maxHeight) return [text, ""];
+  let low = 1;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = text.slice(0, middle).trimEnd();
+    if (doc.heightOfString(candidate, { width, lineGap: 0 }) <= maxHeight) low = middle;
+    else high = middle - 1;
+  }
+  let cut = text.slice(0, low).trimEnd().lastIndexOf(" ");
+  if (cut < 1) cut = low;
+  return [text.slice(0, cut).trimEnd(), text.slice(cut).trimStart()];
+}
+
+function signatureHeight(): number {
+  return 106;
 }
 
 function drawSignature(doc: PDFKit.PDFDocument, company: PdfCompany, y: number): number {
-  const blockHeight = 108;
-  doc.font("Helvetica").fontSize(8).fillColor("#52616a").text("Hormat kami,", 390, y, { width: 145, align: "center" });
-  addImage(doc, company.signatureDataUrl, 392, y + 12, [140, 58]);
-  addImage(doc, company.logoDataUrl, 455, y + 16, [70, 50], 0.62);
-  doc.font("Helvetica-Bold").fontSize(9).fillColor("#16394b").text(company.adminName || "Admin NUFATUR", 390, y + 72, { width: 145, align: "center" });
-  doc.font("Helvetica").fontSize(8).fillColor("#52616a").text(company.adminTitle || "Penanggung Jawab", 390, y + 86, { width: 145, align: "center" });
-  return y + blockHeight;
+  const containerWidth = 205;
+  const containerX = RIGHT - containerWidth;
+  const signatureWidth = containerWidth - 20;
+  const stampSize = 58;
+  const targetCenterX = containerX + containerWidth / 2 + 26;
+  const signatureOpticalOffsetX = 48;
+  doc.font("Helvetica").fontSize(8).fillColor("#52616a").text("Hormat kami,", containerX, y, { width: containerWidth, align: "center" });
+  addImage(doc, company.signatureDataUrl, targetCenterX - signatureWidth / 2 + signatureOpticalOffsetX, y + 14, [signatureWidth, 40]);
+  addImage(doc, company.logoDataUrl, targetCenterX - stampSize / 2, y + 10, [stampSize, stampSize], 0.58);
+  doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#16394b").text(company.adminName || "Admin NUFATUR", containerX, y + 76, { width: containerWidth, align: "center" });
+  doc.font("Helvetica").fontSize(7.5).fillColor("#52616a").text(company.adminTitle || "Penanggung Jawab", containerX, y + 91, { width: containerWidth, align: "center" });
+  return y + signatureHeight();
+}
+
+function formatDepartureDate(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "long", year: "numeric" }).format(date).toUpperCase();
+}
+
+function drawDeparture(doc: PDFKit.PDFDocument, date: string | null | undefined, groupName: string | null | undefined, y: number): number {
+  const departureDate = formatDepartureDate(date);
+  const group = nonEmpty(groupName);
+  if (!departureDate && !group) return y;
+  const height = departureDate && group ? 48 : 32;
+  doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 5).fill("#e8f5f1");
+  doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("KEBERANGKATAN", LEFT + 10, y + 8);
+  if (departureDate) doc.font("Helvetica-Bold").fontSize(10).fillColor("#16394b").text(departureDate, LEFT + 10, y + 20, { width: group ? 250 : 490 });
+  if (group) {
+    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("PAKET / GROUP", 330, y + 8);
+    doc.font("Helvetica").fontSize(8.5).fillColor("#16394b").text(group, 330, y + 20, { width: 205, height: 20, ellipsis: true });
+  }
+  return y + height + 8;
+}
+
+function ensureSpace(doc: PDFKit.PDFDocument, company: PdfCompany, y: number, height: number, documentNumber: string): number {
+  if (y + height <= CONTENT_BOTTOM) return y;
+  return newInvoicePage(doc, company, documentNumber);
+}
+
+function newReceiptPage(doc: PDFKit.PDFDocument, company: PdfCompany, documentNumber: string): number {
+  doc.addPage();
+  drawBrandHeader(doc, company, company.receiptTitle || "KUITANSI", true, documentNumber);
+  return CONTINUATION_CONTENT_TOP;
+}
+
+function ensureReceiptSpace(doc: PDFKit.PDFDocument, company: PdfCompany, y: number, height: number, documentNumber: string): number {
+  if (y + height <= CONTENT_BOTTOM) return y;
+  return newReceiptPage(doc, company, documentNumber);
+}
+
+function drawBottomBlocks(doc: PDFKit.PDFDocument, company: PdfCompany, notes: string, y: number, newPage: (doc: PDFKit.PDFDocument, company: PdfCompany) => number): number {
+  let remaining = notes;
+  while (remaining) {
+    const available = CONTENT_BOTTOM - y;
+    const notesHeight = noteHeight(doc, remaining, CONTENT_WIDTH - 18);
+    if (notesHeight + 8 + SIGNATURE_GAP + SIGNATURE_RESERVE <= available) {
+      y = drawNotes(doc, remaining, y, CONTENT_WIDTH) + 6;
+      remaining = "";
+      break;
+    }
+    if (available > 58) {
+      const [chunk, rest] = splitTextToFit(doc, remaining, CONTENT_WIDTH - 18, available - 58);
+      if (chunk) {
+        y = drawNotes(doc, chunk, y, CONTENT_WIDTH, remaining === notes ? "CATATAN / PERHATIAN" : "CATATAN / PERHATIAN - LANJUTAN");
+        remaining = rest;
+      }
+    }
+    if (remaining) y = newPage(doc, company);
+  }
+  if (y + SIGNATURE_GAP + SIGNATURE_RESERVE > CONTENT_BOTTOM) y = newPage(doc, company);
+  return drawSignature(doc, company, y + SIGNATURE_GAP);
 }
 
 function addFooters(doc: PDFKit.PDFDocument, company: PdfCompany): void {
   const range = doc.bufferedPageRange();
-  for (let index = range.start; index < range.start + range.count; index += 1) {
-    doc.switchToPage(index);
-    doc.font("Helvetica").fontSize(7).fillColor("#6b7d86").text(company.footer, LEFT, FOOTER_Y, { width: CONTENT_WIDTH, align: "center" });
-  }
+  if (!company.footer.trim() || range.count === 0) return;
+  doc.switchToPage(range.start + range.count - 1);
+  doc.font("Helvetica").fontSize(7).fillColor("#6b7d86").text(company.footer, LEFT, FOOTER_Y, { width: CONTENT_WIDTH, align: "center" });
 }
 
 function contentDisposition(name: string, inline: boolean): string {
@@ -213,77 +407,92 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
   res.setHeader("Content-Disposition", contentDisposition(invoice.number, inline));
   doc.pipe(res);
 
-  drawBrandHeader(doc, company, company.invoiceTitle || "INVOICE");
-  labelValue(doc, "Invoice Date", invoice.invoiceDate, 366, 82, 145);
-  labelValue(doc, "Invoice Number", invoice.number, 366, 116, 145);
-  labelValue(doc, "Reference", invoice.reference ?? "-", 366, 150, 145);
-  line(doc, 174);
-  labelValue(doc, "BILL TO", invoice.customerName, LEFT, 190, 230);
-  doc.fontSize(8).font("Helvetica").fillColor("#52616a").text(`${invoice.customerType}${invoice.customerAddress ? ` • ${invoice.customerAddress}` : ""}`, LEFT, 219, { width: 230 });
-  labelValue(doc, "DUE DATE", invoice.dueDate, 366, 190, 145);
-  doc.font("Helvetica-Bold").fontSize(10).fillColor(invoice.status === "LUNAS" ? "#16835b" : invoice.status === "JATUH TEMPO" ? "#ba5b17" : "#234252").text(invoice.status, 366, 224);
-
-  let y = drawInvoiceTableHeader(doc, 260);
-  invoice.items.forEach((item) => {
-    const description = [item.description, item.flight, item.details].filter(Boolean).join("\n");
-    const height = Math.max(34, doc.heightOfString(description, { width: 196, lineGap: 2 }) + 20);
-    if (y + height > 690) y = newInvoicePage(doc, company);
-    const tableX = [42, 250, 326, 382, 448, 553];
-    doc.rect(LEFT, y, CONTENT_WIDTH, height).strokeColor("#cad6dc").stroke();
-    for (let index = 1; index < tableX.length - 1; index += 1) doc.moveTo(tableX[index], y).lineTo(tableX[index], y + height).strokeColor("#cad6dc").stroke();
-    doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(description, 48, y + 8, { width: 196, lineGap: 2 });
-    doc.text(item.price ? money(item.price) : "-", 255, y + 8, { width: 66, align: "right" });
-    doc.text(displayQty(item.quantity), 331, y + 8, { width: 46, align: "center" });
-    doc.text(item.itemDate ?? "-", 387, y + 8, { width: 56, align: "center" });
-    doc.font("Helvetica-Bold").text(money(item.amount), 453, y + 8, { width: 94, align: "right" });
-    y += height;
-  });
-
+  const summaryRows: Array<[string, string]> = [
+    ["Subtotal", money(invoice.subtotal)],
+    ["Diskon", numberValue(invoice.discount) ? money(invoice.discount) : "-"],
+    ["Pajak", numberValue(invoice.tax) ? money(invoice.tax) : "-"],
+    ["CASHBACK", numberValue(invoice.additionalCost) ? money(invoice.additionalCost) : "-"],
+    ["TOTAL INVOICE", money(invoice.total)],
+    ["DIBAYAR", money(invoice.paid)],
+    ["SISA PEMBAYARAN", money(invoice.remaining)],
+    ["STATUS", invoice.status],
+  ];
   const includeText = nonEmpty(invoice.includeText) || nonEmpty(company.includeText);
-  if (includeText) {
-    if (y > 650) y = newInvoicePage(doc, company);
-    y = drawInclude(doc, includeText, y + 8);
-  }
-  if (y + 150 > 760) y = newInvoicePage(doc, company);
-  const summaryRows: Array<[string, string]> = [["Subtotal", money(invoice.subtotal)]];
-  if (numberValue(invoice.discount) > 0) summaryRows.push(["Diskon", money(invoice.discount)]);
-  if (numberValue(invoice.tax) > 0) summaryRows.push(["Pajak", money(invoice.tax)]);
-  if (numberValue(invoice.additionalCost) > 0) summaryRows.push(["CASHBACK", money(invoice.additionalCost)]);
-  summaryRows.push(["TOTAL", money(invoice.total)]);
-  y = drawSummary(doc, summaryRows, y + 4) + 14;
-
-  if (y + 110 > 760) y = newInvoicePage(doc, company);
-  doc.font("Helvetica-Bold").fontSize(9).fillColor("#234252").text("PAYMENT DETAIL", LEFT, y);
-  y += 16;
-  if (invoice.payments.length === 0) {
-    doc.font("Helvetica").fontSize(8).fillColor("#52616a").text("Belum ada pembayaran.", LEFT, y);
-    y += 24;
-  } else {
-    invoice.payments.forEach((payment) => {
-      if (y + 24 > 760) y = newInvoicePage(doc, company);
-      doc.rect(LEFT, y, CONTENT_WIDTH, 23).strokeColor("#cad6dc").stroke();
-      doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(payment.description, 48, y + 7, { width: 180 });
-      doc.text(payment.paymentDate, 300, y + 7, { width: 70 });
-      doc.text(payment.bank ?? payment.method, 380, y + 7, { width: 70 });
-      doc.font("Helvetica-Bold").text(money(payment.amount), 453, y + 7, { width: 94, align: "right" });
-      y += 23;
-    });
-  }
-  y += 8;
-  if (y + 170 > 760) y = newInvoicePage(doc, company);
-  doc.font("Helvetica-Bold").fontSize(9).fillColor("#234252").text("PEMBAYARAN MELALUI", LEFT, y);
-  doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(company.notes || "-", LEFT, y + 15, { width: CONTENT_WIDTH });
-  y += Math.max(42, doc.heightOfString(company.notes || "-", { width: CONTENT_WIDTH }) + 30);
   const invoiceNotes = noteText(company, invoice.notes);
-  if (y + noteHeight(doc, invoiceNotes) + 125 > 760) y = newInvoicePage(doc, company);
-  y = drawNotes(doc, invoiceNotes, y);
-  drawSignature(doc, company, y);
+  const itemRows = invoice.items.length ? invoice.items : [{ description: "", amount: "0" }];
+  doc.font("Helvetica").fontSize(8);
+  const [includeFirst, includeRest] = splitTextToFit(doc, includeText, 415, INVOICE_SLOTS.includeHeight - 14);
+  doc.font("Helvetica").fontSize(6.4);
+  const [notesFirst, notesRest] = splitTextToFit(doc, invoiceNotes, CONTENT_WIDTH - 18, INVOICE_SLOTS.notesHeight - 20);
+
+  const drawPageOne = (): void => {
+    drawBrandHeader(doc, company, company.invoiceTitle || "INVOICE");
+    labelValue(doc, "Tanggal Invoice", invoice.invoiceDate, 366, 82, 145);
+    labelValue(doc, "Invoice Number", invoice.number, 366, 112, 145);
+    line(doc, 160);
+    labelValue(doc, "CUSTOMER", invoice.customerName, LEFT, INVOICE_SLOTS.customerY, 270);
+    doc.fontSize(7.5).font("Helvetica").fillColor("#52616a").text(invoice.customerAddress || invoice.customerType || "-", LEFT, INVOICE_SLOTS.customerY + 27, { width: 270, height: 18, ellipsis: true });
+    labelValue(doc, "JATUH TEMPO", invoice.dueDate, 366, INVOICE_SLOTS.customerY, 145);
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(invoice.status === "LUNAS" ? "#16835b" : invoice.status === "JATUH TEMPO" ? "#ba5b17" : "#234252").text(invoice.status, 366, INVOICE_SLOTS.customerY + 27, { width: 145, align: "right" });
+    drawDeparture(doc, invoice.group?.departureDate, invoice.group ? `${invoice.group.name} • ${invoice.group.packageName}` : null, INVOICE_SLOTS.departureY);
+    drawInvoiceTableHeader(doc, INVOICE_SLOTS.tableY);
+    for (let index = 0; index < INVOICE_SLOTS.pageOneRows; index += 1) {
+      if (itemRows[index]) drawInvoiceItemRow(doc, itemRows[index], INVOICE_SLOTS.tableY + 22 + index * INVOICE_SLOTS.tableRowHeight);
+      else drawEmptyInvoiceRow(doc, INVOICE_SLOTS.tableY + 22 + index * INVOICE_SLOTS.tableRowHeight);
+    }
+    drawFixedInclude(doc, includeFirst, INVOICE_SLOTS.includeY);
+    drawFixedSummary(doc, summaryRows, INVOICE_SLOTS.summaryY);
+    drawFixedPaymentSlot(doc, invoice.payments);
+    drawFixedBank(doc, company);
+  };
+
+  const drawContinuationTable = (items: PdfInvoice["items"], fillTemplateRows: boolean): void => {
+    drawBrandHeader(doc, company, company.invoiceTitle || "INVOICE", true, invoice.number);
+    drawInvoiceTableHeader(doc, INVOICE_SLOTS.continuationTableY);
+    items.forEach((item, index) => drawInvoiceItemRow(doc, item, INVOICE_SLOTS.continuationTableY + 22 + index * INVOICE_SLOTS.tableRowHeight));
+    if (fillTemplateRows) {
+      for (let index = items.length; index < INVOICE_SLOTS.continuationRows; index += 1) drawEmptyInvoiceRow(doc, INVOICE_SLOTS.continuationTableY + 22 + index * INVOICE_SLOTS.tableRowHeight);
+    }
+  };
+
+  drawPageOne();
+  let remainingItems = itemRows.slice(INVOICE_SLOTS.pageOneRows);
+  let remainingInclude = includeRest;
+  let remainingNotes = notesRest;
+  let paymentContinuationPending = invoice.payments.length > 2;
+  const hasOverflow = remainingItems.length > 0 || Boolean(remainingInclude) || Boolean(remainingNotes) || paymentContinuationPending;
+  if (!hasOverflow) {
+    drawFixedNotes(doc, notesFirst);
+    drawSignature(doc, company, INVOICE_SLOTS.signatureY);
+  } else {
+    drawFixedNotes(doc, "");
+  }
+
+  while (remainingItems.length > 0 || remainingInclude || remainingNotes || paymentContinuationPending) {
+    doc.addPage();
+    const pageItems = remainingItems.splice(0, INVOICE_SLOTS.continuationRows);
+    const finalPage = remainingItems.length === 0;
+    drawContinuationTable(pageItems, !finalPage);
+    if (remainingItems.length === 0) {
+      if (paymentContinuationPending) drawPaymentContinuation(doc, invoice.payments);
+      paymentContinuationPending = false;
+      if (remainingInclude) {
+        drawFixedInclude(doc, remainingInclude, 300, 70);
+        remainingInclude = "";
+      }
+      if (remainingNotes) {
+        drawFixedNotes(doc, remainingNotes, INVOICE_SLOTS.notesY, INVOICE_SLOTS.notesHeight, "CATATAN / PERHATIAN - LANJUTAN");
+        remainingNotes = "";
+      }
+      drawSignature(doc, company, INVOICE_SLOTS.signatureY);
+    }
+  }
   addFooters(doc, company);
   doc.end();
 }
 
 export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: PdfReceipt, inline = false): void {
-  const doc = new PDFDocument({ size: "A4", margin: 60, bufferPages: true });
+  const doc = new PDFDocument({ size: "A4", margin: 42, bufferPages: true });
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", contentDisposition(receipt.number, inline));
   doc.pipe(res);
@@ -291,34 +500,30 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
   drawBrandHeader(doc, company, company.receiptTitle || "KUITANSI");
   doc.font("Helvetica").fontSize(9).fillColor("#52616a").text(`No. ${receipt.number}`, 370, 84, { align: "right" });
   doc.text(`Tanggal: ${receipt.receiptDate}`, 370, 99, { align: "right" });
-  line(doc, 152);
-  doc.font("Helvetica").fontSize(12).fillColor("#1c2a32").text("Telah diterima dari", 60, 190);
-  doc.font("Helvetica-Bold").fontSize(15).fillColor("#16394b").text(receipt.receivedFrom, 60, 217);
-  doc.roundedRect(60, 263, 475, 66, 8).fill("#e7f0f4");
-  doc.font("Helvetica-Bold").fontSize(22).fillColor("#16394b").text(money(receipt.amount), 80, 286);
-  doc.font("Helvetica").fontSize(10).fillColor("#52616a").text(receipt.words, 80, 315, { width: 420 });
-  doc.font("Helvetica").fontSize(11).fillColor("#1c2a32").text("Untuk pembayaran", 60, 370);
-  doc.font("Helvetica-Bold").fontSize(13).text(receipt.purpose, 60, 395, { width: 475 });
-  doc.font("Helvetica").fontSize(10).text(`Invoice: ${receipt.invoiceNumber}`, 60, 437);
-  doc.text(`Metode: ${receipt.method}${receipt.bank ? ` • ${receipt.bank}` : ""}`, 60, 455);
-
-  let y = 495;
-  const summaryRows: Array<[string, string]> = [["Subtotal", money(receipt.subtotal)]];
-  if (numberValue(receipt.discount) > 0) summaryRows.push(["Diskon", money(receipt.discount)]);
-  if (numberValue(receipt.tax) > 0) summaryRows.push(["Pajak", money(receipt.tax)]);
-  if (numberValue(receipt.cashback) > 0) summaryRows.push(["CASHBACK", money(receipt.cashback)]);
-  summaryRows.push(["TOTAL", money(receipt.total)]);
-  y = drawSummary(doc, summaryRows, y);
-  const includeText = nonEmpty(receipt.includeText) || nonEmpty(company.includeText);
-  if (includeText) y = drawInclude(doc, includeText, y + 12);
-  const receiptNotes = noteText(company, receipt.notes);
-  if (y + noteHeight(doc, receiptNotes) + 125 > 760) {
-    doc.addPage();
-    drawBrandHeader(doc, company, company.receiptTitle || "KUITANSI", true);
-    y = 112;
-  }
-  y = drawNotes(doc, receiptNotes, y + 2);
-  drawSignature(doc, company, y);
+  line(doc, 160);
+  doc.font("Helvetica-Bold").fontSize(9).fillColor("#287261").text("DITERIMA DARI", LEFT, 173);
+  doc.font("Helvetica-Bold").fontSize(14).fillColor("#16394b").text(receipt.receivedFrom || "-", LEFT, 188, { width: CONTENT_WIDTH, height: 20, ellipsis: true });
+  const receiptRows: Array<[string, string]> = [
+    ["GROUP / PAKET", receipt.groupName || "-"],
+    ["KEBERANGKATAN", formatDepartureDate(receipt.departureDate) || "-"],
+    ["UNTUK PEMBAYARAN", `Invoice: ${receipt.invoiceNumber || "-"}`],
+    ["METODE PEMBAYARAN", `${receipt.method || "-"}${receipt.bank ? ` • ${receipt.bank}` : ""}`],
+  ];
+  receiptRows.forEach(([label, value], index) => {
+    const y = 226 + index * 28;
+    doc.font("Helvetica-Bold").fontSize(8).fillColor("#52616a").text(label, LEFT, y, { width: 125 });
+    doc.font("Helvetica").fontSize(9).fillColor("#1c2a32").text(value, LEFT + 135, y, { width: CONTENT_WIDTH - 135, height: 22, lineGap: 1, ellipsis: true });
+  });
+  const amountY = 352;
+  doc.roundedRect(LEFT, amountY, CONTENT_WIDTH, 58, 6).fill("#e7f0f4");
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#287261").text("JUMLAH DITERIMA", LEFT + 14, amountY + 11);
+  doc.font("Helvetica-Bold").fontSize(19).fillColor("#16394b").text(money(receipt.amount), LEFT + 14, amountY + 25);
+  doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("TERBILANG", LEFT + 205, amountY + 11);
+  doc.font("Helvetica").fontSize(8).fillColor("#52616a").text(receipt.words || "-", LEFT + 205, amountY + 24, { width: 270, height: 28, lineGap: 1, ellipsis: true });
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("RINGKASAN PEMBAYARAN", LEFT, 438);
+  drawSummary(doc, [["TOTAL INVOICE", money(receipt.total)], ["TOTAL DIBAYAR", money(receipt.paid)], ["SISA PEMBAYARAN", money(receipt.remaining)], ["STATUS", receipt.status]], 453);
+  drawFixedNotes(doc, receipt.notes || "", 535, 70);
+  drawSignature(doc, company, INVOICE_SLOTS.signatureY);
   addFooters(doc, company);
   doc.end();
 }
