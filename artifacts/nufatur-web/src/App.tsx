@@ -22,12 +22,17 @@ import {
   Settings,
   ShieldCheck,
   Trash2,
+  Upload,
   WalletCards,
   X,
 } from "lucide-react";
 import { api, formatDate, formatMoneyInput, money, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
 
 type View = "dashboard" | "groups" | "invoices" | "payments" | "receipts" | "settings";
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+};
 type InvoiceDraft = {
   id?: number;
   number: string;
@@ -98,6 +103,48 @@ const emptyDraft = (): InvoiceDraft => ({
 
 function statusClass(status: string): string {
   return status.toLowerCase().replaceAll(" ", "-");
+}
+
+function PwaInstallButton() {
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [showIosInstructions, setShowIosInstructions] = useState(false);
+  const [isIos, setIsIos] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+
+  useEffect(() => {
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || ("standalone" in navigator && navigator.standalone === true);
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    setIsStandalone(standalone);
+    setIsIos(ios);
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+    return () => window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+  }, []);
+
+  if (isStandalone || (!installPrompt && !isIos)) return null;
+
+  async function install() {
+    if (installPrompt) {
+      await installPrompt.prompt();
+      const choice = await installPrompt.userChoice;
+      if (choice.outcome === "accepted") setInstallPrompt(null);
+      return;
+    }
+    setShowIosInstructions(true);
+  }
+
+  return <>
+    <button className="install-button" onClick={() => void install()}><ArrowDownToLine size={15} />Pasang aplikasi</button>
+    {showIosInstructions && <Modal title="Pasang NUFATUR" onClose={() => setShowIosInstructions(false)}>
+      <div className="install-instructions">
+        <p>Di Safari, ketuk tombol Bagikan lalu pilih <strong>Tambahkan ke Layar Utama</strong>.</p>
+        <button className="button primary" onClick={() => setShowIosInstructions(false)}>Mengerti</button>
+      </div>
+    </Modal>}
+  </>;
 }
 
 function draftFromInvoice(invoice: Invoice): InvoiceDraft {
@@ -214,7 +261,7 @@ function App() {
     </aside>
     {sidebarOpen && <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />}
     <main className="main-area">
-      <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)}><Menu size={22} /></button><div><p className="topbar-kicker">PT NURUL FAJAR ABINAYA</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div><div className="topbar-meta"><span className="online-dot" />Sistem aktif</div></header>
+      <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)}><Menu size={22} /></button><div><p className="topbar-kicker">PT NURUL FAJAR ABINAYA</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div><div className="topbar-actions"><PwaInstallButton /><div className="topbar-meta"><span className="online-dot" />Sistem aktif</div></div></header>
       {notice && <div className="toast success"><Check size={17} />{notice}</div>}
       {error && <div className="toast error"><CircleAlert size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div>}
       <div className="page-content">
@@ -395,6 +442,8 @@ function SettingsPage({ onNotice, onError }: { onNotice: (message: string) => vo
   const [settings, setSettings] = useState<CompanySettings | null>(null);
   const [banks, setBanks] = useState<Bank[]>([]);
   const [saving, setSaving] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupStatus, setBackupStatus] = useState("");
   const [newBank, setNewBank] = useState({ bankName: "", accountNumber: "", accountName: "", isPrimary: false });
   useEffect(() => {
     api<{ settings: CompanySettings; banks: Bank[] }>("/api/settings")
@@ -435,6 +484,78 @@ function SettingsPage({ onNotice, onError }: { onNotice: (message: string) => vo
     const reader = new FileReader();
     reader.onload = () => setSettings((current) => current ? { ...current, [key]: String(reader.result) } : current);
     reader.readAsDataURL(file);
+  }
+
+  async function downloadBackup() {
+    setBackupBusy(true);
+    setBackupStatus("Membuat backup database...");
+    try {
+      const response = await fetch("/api/admin/database/backup", { credentials: "same-origin" });
+      if (!response.ok) throw new Error("Backup database tidak tersedia.");
+      setBackupStatus("Mengunduh file backup...");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `nufatur-backup-${new Date().toISOString().slice(0, 10)}.dump`;
+      link.click();
+      URL.revokeObjectURL(url);
+      onNotice("Backup database berhasil diunduh.");
+      setBackupStatus("Backup berhasil diunduh.");
+    } catch (error) {
+      setBackupStatus("Backup gagal.");
+      onError(error instanceof Error ? error.message : "Backup database gagal.");
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function restoreBackup(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBackupBusy(true);
+    setBackupStatus("Mengunggah dan memvalidasi file backup...");
+    try {
+      const prepareResponse = await fetch("/api/admin/database/restore/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        credentials: "same-origin",
+        body: file,
+      });
+      const prepared = await prepareResponse.json().catch(() => ({ message: "File backup tidak valid." }));
+      if (!prepareResponse.ok || typeof prepared.confirmationToken !== "string") {
+        throw new Error(typeof prepared.message === "string" ? prepared.message : "File backup tidak valid.");
+      }
+      setBackupStatus("File valid. Menunggu konfirmasi restore...");
+      if (!window.confirm("Validasi file berhasil. Restore akan mengganti seluruh data database saat ini. Lanjutkan?")) {
+        await fetch("/api/admin/database/restore/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ confirmationToken: prepared.confirmationToken }),
+        });
+        setBackupStatus("Restore dibatalkan.");
+        return;
+      }
+      setBackupStatus("Membuat safety backup dan memulihkan database...");
+      const response = await fetch("/api/admin/database/restore/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ confirmationToken: prepared.confirmationToken }),
+      });
+      const payload = await response.json().catch(() => ({ message: "Restore database gagal." }));
+      if (!response.ok) throw new Error(typeof payload.message === "string" ? payload.message : "Restore database gagal.");
+      setBackupStatus("Database berhasil dipulihkan. Memuat ulang aplikasi...");
+      window.alert("Database berhasil dipulihkan. Aplikasi akan dimuat ulang.");
+      window.location.reload();
+    } catch (error) {
+      setBackupStatus("Restore gagal. Periksa pesan error dan status database.");
+      onError(error instanceof Error ? error.message : "Restore database gagal.");
+    } finally {
+      setBackupBusy(false);
+    }
   }
 
   return <>
@@ -483,6 +604,12 @@ function SettingsPage({ onNotice, onError }: { onNotice: (message: string) => vo
         <div className="panel-heading"><div><p className="eyebrow">PEMBAYARAN</p><h3>Rekening bank</h3></div><Banknote size={20} /></div>
         {banks.map((bank) => <div className="bank-row" key={bank.id}><div className="bank-badge">{bank.bankName.slice(0, 2).toUpperCase()}</div><div><strong>{bank.bankName}</strong><span>{bank.accountNumber} • {bank.accountName}</span></div>{bank.isPrimary && <span className="primary-label">Utama</span>}</div>)}
         <div className="add-bank"><h4>Tambah rekening</h4><div className="form-grid three"><label>Bank<input value={newBank.bankName} onChange={(event) => setNewBank({ ...newBank, bankName: event.target.value })} /></label><label>Nomor rekening<input value={newBank.accountNumber} onChange={(event) => setNewBank({ ...newBank, accountNumber: event.target.value })} /></label><label>Nama rekening<input value={newBank.accountName} onChange={(event) => setNewBank({ ...newBank, accountName: event.target.value })} /></label></div><button type="button" className="button small secondary" onClick={(event) => void addBank(event as unknown as React.FormEvent)}><Plus size={15} />Tambah rekening</button></div>
+      </section>
+      <section className="panel settings-card backup-card">
+        <div className="panel-heading"><div><p className="eyebrow">DATA DATABASE</p><h3>Backup & Restore</h3></div><ShieldCheck size={20} /></div>
+        <p className="backup-warning">Backup berisi seluruh data invoice, pembayaran, kuitansi, pelanggan, pengguna, pengaturan, logo, tanda tangan, dan template. Simpan file di lokasi yang aman.</p>
+        <p className="backup-status" aria-live="polite">{backupBusy ? <><span className="spinner small" />{backupStatus}</> : backupStatus}</p>
+        <div className="intro-actions"><button type="button" className="button secondary" onClick={() => void downloadBackup()} disabled={backupBusy}><ArrowDownToLine size={17} />Download backup</button><label className="button secondary">Upload backup<Upload size={17} /><input type="file" accept="application/octet-stream,.dump" onChange={(event) => void restoreBackup(event)} disabled={backupBusy} hidden /></label></div>
       </section>
       <div className="settings-save"><button className="button primary" disabled={saving}>{saving ? "Menyimpan..." : "Simpan semua pengaturan"}</button></div>
     </form>

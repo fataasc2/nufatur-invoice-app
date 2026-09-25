@@ -18,6 +18,24 @@ import { getCompanySettings } from "../lib/company-settings";
 import { nextDocumentNumber, numberValue, terbilang, todayIso } from "../lib/format";
 import { ensureSeedData } from "../lib/seed";
 import { streamInvoicePdf, streamReceiptPdf } from "../lib/pdf";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import {
+  cancelRestore,
+  claimRestore,
+  createTempBackupDirectory,
+  discardRestore,
+  dumpDatabase,
+  MAX_BACKUP_BYTES,
+  prepareRestoreUpload,
+  removeTempBackupDirectory,
+  restoreDatabase,
+  sessionBinding,
+  validateBackupFile,
+  verifyDatabase,
+  withDatabaseLock,
+} from "../lib/database-backup";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
@@ -162,10 +180,16 @@ async function audit(userId: number, action: string, entity: string, entityId?: 
   await db.insert(auditLogs).values({ userId, action, entity, entityId, metadata });
 }
 
-function guard(handler: (req: Request, res: Response, userId: number) => Promise<void>) {
+function guard(handler: (req: Request, res: Response, userId: number) => Promise<void>, lockDatabase = true) {
   return async (req: Request, res: Response) => {
     const userId = await requireUser(req, res);
-    if (userId) await handler(req, res, userId);
+    if (!userId) return;
+    const execute = () => handler(req, res, userId);
+    if (lockDatabase) {
+      await withDatabaseLock(execute);
+      return;
+    }
+    await execute();
   };
 }
 
@@ -214,6 +238,118 @@ router.post("/auth/logout", (req, res) => {
   clearSession(res);
   res.status(204).end();
 });
+
+router.get("/admin/database/backup", guard(async (_req, res) => {
+  const directory = await createTempBackupDirectory();
+  const backupFile = `${directory}/nufatur-backup.dump`;
+  try {
+    await withDatabaseLock(() => dumpDatabase(backupFile));
+    const details = await stat(backupFile);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", details.size);
+    res.setHeader("Content-Disposition", `attachment; filename="nufatur-backup-${new Date().toISOString().slice(0, 10)}.dump"`);
+    const stream = createReadStream(backupFile);
+    const cleanup = () => void removeTempBackupDirectory(directory);
+    res.once("finish", cleanup);
+    res.once("close", cleanup);
+    stream.on("error", cleanup);
+    stream.pipe(res);
+  } catch (error) {
+    await removeTempBackupDirectory(directory);
+    logger.error({ err: error }, "Database backup failed");
+    res.status(503).json({ message: "Backup database tidak tersedia." });
+  }
+}, false));
+
+router.post("/admin/database/restore/prepare", guard(async (req, res, userId) => {
+  const contentType = String(req.headers["content-type"] ?? "").split(";", 1)[0].toLowerCase();
+  if (contentType !== "application/octet-stream" && contentType !== "application/x-pg-dump") {
+    res.status(415).json({ message: "Format file backup tidak didukung." });
+    return;
+  }
+  const contentLength = Number(req.headers["content-length"] ?? 0);
+  if (contentLength > MAX_BACKUP_BYTES) {
+    res.status(413).json({ message: "File backup terlalu besar." });
+    return;
+  }
+
+  try {
+    const result = await prepareRestoreUpload(req, userId, sessionBinding(req.cookies?.nufatur_session));
+    res.status(201).json({ confirmationToken: result.token, expiresAt: result.expiresAt, size: result.size });
+  } catch (error) {
+    logger.error({ err: error }, "Database restore preparation failed");
+    res.status(400).json({ message: "File backup tidak valid atau tidak dapat diverifikasi." });
+  }
+}, false));
+
+router.post("/admin/database/restore/confirm", guard(async (req, res, userId) => {
+  const token = typeof req.body?.confirmationToken === "string" ? req.body.confirmationToken : "";
+  if (!token) {
+    res.status(400).json({ message: "Konfirmasi restore tidak valid." });
+    return;
+  }
+
+  let pending;
+  try {
+    pending = claimRestore(token, userId, sessionBinding(req.cookies?.nufatur_session));
+  } catch {
+    res.status(403).json({ message: "Konfirmasi restore tidak valid atau sudah kedaluwarsa." });
+    return;
+  }
+
+  const currentFile = `${pending.directory}/current.dump`;
+  let safeToDiscard = true;
+  try {
+    await withDatabaseLock(async () => {
+      await dumpDatabase(currentFile);
+      await validateBackupFile(currentFile);
+      safeToDiscard = false;
+      try {
+        await restoreDatabase(pending.uploadedFile);
+        await verifyDatabase();
+        safeToDiscard = true;
+      } catch {
+        try {
+          await restoreDatabase(currentFile);
+          await verifyDatabase();
+          safeToDiscard = true;
+        } catch {
+          throw new Error("Database restore failed; database state requires operator verification.");
+        }
+        throw new Error("Database restore failed; safety backup restored.");
+      }
+    });
+    res.json({ message: "Database berhasil dipulihkan." });
+  } catch (error) {
+    logger.error({ err: error }, "Database restore confirmation failed");
+    if (error instanceof Error && error.message === "Database restore failed; safety backup restored.") {
+      res.status(409).json({ message: "Restore gagal; safety backup berhasil dipulihkan." });
+    } else {
+      safeToDiscard = false;
+      res.status(503).json({ message: "Restore gagal dan kondisi database perlu diverifikasi operator." });
+    }
+  } finally {
+    if (safeToDiscard) {
+      try {
+        await discardRestore(pending);
+      } catch (cleanupError) {
+        logger.warn({ err: cleanupError }, "Temporary restore files could not be removed");
+      }
+    }
+  }
+}, false));
+
+router.post("/admin/database/restore/cancel", guard(async (req, res, userId) => {
+  const token = typeof req.body?.confirmationToken === "string" ? req.body.confirmationToken : "";
+  if (token) {
+    try {
+      await cancelRestore(token, userId, sessionBinding(req.cookies?.nufatur_session));
+    } catch {
+      // Expired or already-used tokens are already safe to discard.
+    }
+  }
+  res.status(204).end();
+}, false));
 
 router.get("/groups", guard(async (req, res) => {
   const search = text(req.query.search).toLowerCase();

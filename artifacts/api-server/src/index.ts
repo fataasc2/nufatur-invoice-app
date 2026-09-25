@@ -1,6 +1,5 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { initializeAppData } from "./routes/nufatur";
 
 const rawPort = process.env["PORT"] ?? "3000";
 
@@ -10,18 +9,11 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-void initializeAppData()
-  .then(() => {
-    app.listen(port, "0.0.0.0", (err) => {
-      if (err) {
-        logger.error({ err }, "Error listening on port");
-        process.exit(1);
-      }
-
-      logger.info({ host: "0.0.0.0", port }, "Server listening");
-    });
-  })
-  .catch((error: unknown) => {
-    logger.error({ err: error }, "Unable to initialize application data");
+app.listen(port, "0.0.0.0", (err) => {
+  if (err) {
+    logger.error({ err }, "Error listening on port");
     process.exit(1);
+  }
+
+  logger.info({ host: "0.0.0.0", port }, "Server listening");
   });
