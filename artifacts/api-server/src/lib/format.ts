@@ -3,12 +3,18 @@ export function numberValue(value: string | number | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export function moneyValue(value: string | number | null | undefined): number {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.round(parsed));
+}
+
 export function money(value: string | number | null | undefined): string {
   return new Intl.NumberFormat("id-ID", {
     style: "currency",
     currency: "IDR",
     maximumFractionDigits: 0,
-  }).format(numberValue(value));
+  }).format(moneyValue(value));
 }
 
 const ONES = [

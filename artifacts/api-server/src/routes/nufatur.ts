@@ -15,7 +15,7 @@ import {
 } from "@workspace/db";
 import { clearSession, currentUser, ensureOwnerAccount, requireUser, setSession, verifyPassword } from "../lib/auth";
 import { getCompanySettings } from "../lib/company-settings";
-import { nextDocumentNumber, numberValue, terbilang, todayIso } from "../lib/format";
+import { moneyValue, nextDocumentNumber, numberValue, terbilang, todayIso } from "../lib/format";
 import { ensureSeedData } from "../lib/seed";
 import { streamInvoicePdf, streamReceiptPdf } from "../lib/pdf";
 import { createReadStream } from "node:fs";
@@ -50,9 +50,9 @@ function optionalText(value: unknown): string | null {
   return result || null;
 }
 
-function moneyValue(value: unknown): number {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+function normalizeInvoiceStatus(value: unknown, fallback = "issued"): string {
+  const candidate = text(value, fallback).toLowerCase();
+  return ["draft", "issued", "paid", "cancelled"].includes(candidate) ? candidate : fallback;
 }
 
 function statusFor(invoice: { status: string; dueDate: string; total: number; paid: number }): string {
@@ -142,17 +142,34 @@ async function receiptForPayment(paymentId: number) {
   return row ? { ...row, includeText: "" } : null;
 }
 
+type InvoiceTransactionClient = Pick<typeof db, "select">;
+
+async function invoiceBalanceForClient(client: InvoiceTransactionClient, id: number) {
+  const invoice = (await client.select(invoiceColumns).from(invoices).where(eq(invoices.id, id)).limit(1))[0];
+  if (!invoice) return null;
+  const items = await client.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, id)).orderBy(invoiceItems.position);
+  const invoicePayments = await client.select().from(payments).where(eq(payments.invoiceId, id)).orderBy(desc(payments.paymentDate));
+  const subtotal = items.reduce((sum, item) => sum + moneyValue(item.amount), 0);
+  const discount = moneyValue(invoice.discount);
+  const additionalCost = moneyValue(invoice.additionalCost);
+  const tax = moneyValue(invoice.tax);
+  const total = Math.max(0, subtotal - discount + additionalCost + tax);
+  const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+  const remaining = Math.max(0, total - paid);
+  return { ...invoice, items, payments: invoicePayments, subtotal, total, paid, remaining, discount, additionalCost, tax };
+}
+
 async function invoiceRecord(id: number) {
   const invoice = await invoiceRow(id);
   if (!invoice) return null;
   const items = await db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, id)).orderBy(invoiceItems.position);
   const invoicePayments = await db.select().from(payments).where(eq(payments.invoiceId, id)).orderBy(desc(payments.paymentDate));
-  const subtotal = items.reduce((sum, item) => sum + numberValue(item.amount), 0);
-  const discount = numberValue(invoice.discount);
-  const additionalCost = numberValue(invoice.additionalCost);
-  const tax = numberValue(invoice.tax);
+  const subtotal = items.reduce((sum, item) => sum + moneyValue(item.amount), 0);
+  const discount = moneyValue(invoice.discount);
+  const additionalCost = moneyValue(invoice.additionalCost);
+  const tax = moneyValue(invoice.tax);
   const total = Math.max(0, subtotal - discount + additionalCost + tax);
-  const paid = invoicePayments.reduce((sum, payment) => sum + numberValue(payment.amount), 0);
+  const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
   const remaining = Math.max(0, total - paid);
   const status = statusFor({ status: invoice.status, dueDate: invoice.dueDate, total, paid });
   return {
@@ -563,7 +580,7 @@ router.get("/invoices/:id", guard(async (req, res) => {
 }));
 
 router.post("/invoices", guard(async (req, res, userId) => {
-  const body = req.body ?? {};
+  const body = (req.body ?? {}) as Record<string, unknown>;
   const group = await requiredGroup(body.groupId, res);
   if (res.headersSent) return;
   const existingNumbers = (await db.select({ number: invoices.number }).from(invoices)).map((row) => row.number);
@@ -571,6 +588,36 @@ router.post("/invoices", guard(async (req, res, userId) => {
   const items = Array.isArray(body.items) ? body.items : [];
   if (!text(body.customerName) || items.length === 0) {
     res.status(400).json({ message: "Nomor, customer, dan minimal satu item wajib diisi." });
+    return;
+  }
+  for (const [index, item] of items.entries()) {
+    const entry = item as Record<string, unknown>;
+    const description = text(entry.description, "");
+    if (!description) {
+      res.status(400).json({ message: `Item invoice ${index + 1} belum memiliki deskripsi.` });
+      return;
+    }
+    const rawQuantity = "quantity" in entry ? entry.quantity : null;
+    const rawPrice = "price" in entry ? entry.price : null;
+    const rawAmount = "amount" in entry ? entry.amount : null;
+    if (rawQuantity != null && rawQuantity !== "" && (!Number.isFinite(Number(rawQuantity)) || Number(rawQuantity) < 0)) {
+      res.status(400).json({ message: `Quantity item ${index + 1} tidak valid.` });
+      return;
+    }
+    if (rawPrice != null && rawPrice !== "" && (!Number.isFinite(Number(rawPrice)) || Number(rawPrice) < 0)) {
+      res.status(400).json({ message: `Harga item ${index + 1} tidak valid.` });
+      return;
+    }
+    if (rawAmount != null && rawAmount !== "" && (!Number.isFinite(Number(rawAmount)) || Number(rawAmount) < 0)) {
+      res.status(400).json({ message: `Nominal item ${index + 1} tidak valid.` });
+      return;
+    }
+  }
+  const discount = Number(body.discount ?? 0);
+  const additionalCost = Number(body.additionalCost ?? 0);
+  const tax = Number(body.tax ?? 0);
+  if ([discount, additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
+    res.status(400).json({ message: "Nilai diskon, biaya tambahan, atau pajak tidak valid." });
     return;
   }
   const created = await db.transaction(async (tx) => {
@@ -594,15 +641,15 @@ router.post("/invoices", guard(async (req, res, userId) => {
       customerEmail: optionalText(body.customerEmail),
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
-      discount: String(moneyValue(body.discount)),
-      additionalCost: String(moneyValue(body.additionalCost)),
-      tax: String(moneyValue(body.tax)),
-      status: text(body.status, "issued"),
+      discount: String(moneyValue(body.discount as string | number | null | undefined)),
+      additionalCost: String(moneyValue(body.additionalCost as string | number | null | undefined)),
+      tax: String(moneyValue(body.tax as string | number | null | undefined)),
+      status: normalizeInvoiceStatus(body.status, "issued"),
     }).returning(invoiceColumns))[0];
     await tx.insert(invoiceItems).values(items.map((item: Record<string, unknown>, position: number) => {
-      const quantity = item.quantity === "" || item.quantity == null ? null : moneyValue(item.quantity);
-      const price = item.price === "" || item.price == null ? null : moneyValue(item.price);
-      const amount = quantity != null && price != null ? quantity * price : moneyValue(item.amount);
+      const quantity = item.quantity === "" || item.quantity == null ? null : numberValue(item.quantity as string | number | null | undefined);
+      const price = item.price === "" || item.price == null ? null : numberValue(item.price as string | number | null | undefined);
+      const amount = quantity != null && price != null ? moneyValue(quantity * price) : moneyValue(item.amount as string | number | null | undefined);
       return {
         invoiceId: invoice.id,
         position,
@@ -628,10 +675,40 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
     res.status(404).json({ message: "Invoice tidak ditemukan." });
     return;
   }
-  const body = req.body ?? {};
+  const body = (req.body ?? {}) as Record<string, unknown>;
   const group = await requiredGroup(body.groupId, res);
   if (res.headersSent) return;
   const items = Array.isArray(body.items) ? body.items : [];
+  for (const [index, item] of items.entries()) {
+    const entry = item as Record<string, unknown>;
+    const description = text(entry.description, "");
+    if (!description) {
+      res.status(400).json({ message: `Item invoice ${index + 1} belum memiliki deskripsi.` });
+      return;
+    }
+    const rawQuantity = "quantity" in entry ? entry.quantity : null;
+    const rawPrice = "price" in entry ? entry.price : null;
+    const rawAmount = "amount" in entry ? entry.amount : null;
+    if (rawQuantity != null && rawQuantity !== "" && (!Number.isFinite(Number(rawQuantity)) || Number(rawQuantity) < 0)) {
+      res.status(400).json({ message: `Quantity item ${index + 1} tidak valid.` });
+      return;
+    }
+    if (rawPrice != null && rawPrice !== "" && (!Number.isFinite(Number(rawPrice)) || Number(rawPrice) < 0)) {
+      res.status(400).json({ message: `Harga item ${index + 1} tidak valid.` });
+      return;
+    }
+    if (rawAmount != null && rawAmount !== "" && (!Number.isFinite(Number(rawAmount)) || Number(rawAmount) < 0)) {
+      res.status(400).json({ message: `Nominal item ${index + 1} tidak valid.` });
+      return;
+    }
+  }
+  const discount = Number(body.discount ?? 0);
+  const additionalCost = Number(body.additionalCost ?? 0);
+  const tax = Number(body.tax ?? 0);
+  if ([discount, additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
+    res.status(400).json({ message: "Nilai diskon, biaya tambahan, atau pajak tidak valid." });
+    return;
+  }
   await db.transaction(async (tx) => {
     await tx.update(invoices).set({
       number: text(body.number, existing.number),
@@ -645,17 +722,17 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       customerEmail: optionalText(body.customerEmail),
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
-      discount: String(moneyValue(body.discount)),
-      additionalCost: String(moneyValue(body.additionalCost)),
-      tax: String(moneyValue(body.tax)),
-      status: text(body.status, existing.status.toLowerCase()),
+      discount: String(moneyValue(body.discount as string | number | null | undefined)),
+      additionalCost: String(moneyValue(body.additionalCost as string | number | null | undefined)),
+      tax: String(moneyValue(body.tax as string | number | null | undefined)),
+      status: normalizeInvoiceStatus(body.status, existing.status.toLowerCase() === "lunas" ? "paid" : "issued"),
       updatedAt: new Date(),
     }).where(eq(invoices.id, id));
     await tx.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
     if (items.length > 0) {
       await tx.insert(invoiceItems).values(items.map((item: Record<string, unknown>, position: number) => {
-        const quantity = item.quantity === "" || item.quantity == null ? null : moneyValue(item.quantity);
-        const price = item.price === "" || item.price == null ? null : moneyValue(item.price);
+        const quantity = item.quantity === "" || item.quantity == null ? null : numberValue(item.quantity as string | number | null | undefined);
+        const price = item.price === "" || item.price == null ? null : numberValue(item.price as string | number | null | undefined);
         return {
           invoiceId: id,
           position,
@@ -665,7 +742,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
           itemDate: group?.departureDate ?? optionalText(item.itemDate),
           quantity: quantity == null ? null : String(quantity),
           price: price == null ? null : String(price),
-          amount: String(quantity != null && price != null ? quantity * price : moneyValue(item.amount)),
+          amount: String(quantity != null && price != null ? moneyValue(quantity * price) : moneyValue(item.amount as string | number | null | undefined)),
         };
       }));
     }
@@ -683,20 +760,48 @@ router.delete("/invoices/:id", guard(async (req, res, userId) => {
 
 router.post("/invoices/:id/payments", guard(async (req, res, userId) => {
   const invoiceId = Number(req.params.id);
-  if (!(await invoiceRecord(invoiceId))) {
+  const invoice = await invoiceRecord(invoiceId);
+  if (!invoice) {
     res.status(404).json({ message: "Invoice tidak ditemukan." });
     return;
   }
-  const body = req.body ?? {};
-  const payment = (await db.insert(payments).values({
-    invoiceId,
-    paymentDate: text(body.paymentDate, todayIso()),
-    description: text(body.description, "Pembayaran"),
-    amount: String(moneyValue(body.amount)),
-    bank: optionalText(body.bank),
-    method: text(body.method, "Transfer"),
-    notes: optionalText(body.notes),
-  }).returning())[0];
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const rawAmount = Number(body.amount ?? 0);
+  if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+    res.status(400).json({ message: "Nominal pembayaran harus lebih dari 0." });
+    return;
+  }
+  const amount = moneyValue(body.amount as string | number | null | undefined);
+  const remaining = Math.max(0, invoice.total - invoice.paid);
+  if (amount > remaining) {
+    res.status(400).json({ message: `Pembayaran melebihi sisa tagihan. Maksimal ${moneyValue(remaining)}.` });
+    return;
+  }
+  const payment = await db.transaction(async (tx) => {
+    const currentInvoice = await invoiceBalanceForClient(tx, invoiceId);
+    if (!currentInvoice) {
+      throw new Error("Invoice tidak ditemukan.");
+    }
+    const currentRemaining = Math.max(0, currentInvoice.total - currentInvoice.paid);
+    if (amount > currentRemaining) {
+      throw new Error("Pembayaran melebihi sisa tagihan.");
+    }
+    const inserted = (await tx.insert(payments).values({
+      invoiceId,
+      paymentDate: text(body.paymentDate, todayIso()),
+      description: text(body.description, "Pembayaran"),
+      amount: String(amount),
+      bank: optionalText(body.bank),
+      method: text(body.method, "Transfer"),
+      notes: optionalText(body.notes),
+    }).returning())[0];
+    const nextPaid = currentInvoice.paid + amount;
+    await tx.update(invoices).set({
+      status: nextPaid >= currentInvoice.total ? "paid" : "issued",
+      updatedAt: new Date(),
+    }).where(eq(invoices.id, invoiceId));
+    return inserted;
+  });
   await audit(userId, "create", "payment", payment.id, { invoiceId });
   res.status(201).json({ payment, invoice: await invoiceRecord(invoiceId) });
 }));
@@ -732,18 +837,34 @@ router.post("/payments/:id/receipt", guard(async (req, res, userId) => {
   }
   const numbers = (await db.select({ number: receipts.number }).from(receipts)).map((row) => row.number);
   const body = req.body ?? {};
-  const receipt = (await db.insert(receipts).values({
-    number: text(body.number, nextDocumentNumber("KWT", numbers)),
-    paymentId,
-    receiptDate: text(body.receiptDate, todayIso()),
-    receivedFrom: text(body.receivedFrom, invoice.customerName),
-    amount: payment.amount,
-    words: terbilang(payment.amount),
-    purpose: text(body.purpose, payment.description),
-    notes: optionalText(body.notes),
-  }).returning(receiptColumns))[0];
-  await audit(userId, "create", "receipt", receipt.id, { paymentId });
-  res.status(201).json({ receipt });
+  try {
+    const receipt = (await db.transaction(async (tx) => {
+      const alreadyCreated = await tx.select({ id: receipts.id }).from(receipts).where(eq(receipts.paymentId, paymentId)).limit(1);
+      if (alreadyCreated[0]) return (await tx.select(receiptColumns).from(receipts).where(eq(receipts.id, alreadyCreated[0].id)).limit(1))[0];
+      return (await tx.insert(receipts).values({
+        number: text(body.number, nextDocumentNumber("KWT", numbers)),
+        paymentId,
+        receiptDate: text(body.receiptDate, todayIso()),
+        receivedFrom: text(body.receivedFrom, invoice.customerName),
+        amount: payment.amount,
+        words: terbilang(payment.amount),
+        purpose: text(body.purpose, payment.description),
+        notes: optionalText(body.notes),
+      }).returning(receiptColumns))[0];
+    }));
+    await audit(userId, "create", "receipt", receipt.id, { paymentId });
+    res.status(201).json({ receipt });
+  } catch (error) {
+    const pgError = error as { code?: string };
+    if (pgError.code === "23505") {
+      const receipt = await receiptForPayment(paymentId);
+      if (receipt) {
+        res.json({ receipt });
+        return;
+      }
+    }
+    throw error;
+  }
 }));
 
 router.get("/receipts", guard(async (_req, res) => {
