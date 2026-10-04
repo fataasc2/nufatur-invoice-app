@@ -103,18 +103,46 @@ export type Dashboard = {
   recent: Invoice[];
 };
 
-export async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) },
-    credentials: "same-origin",
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(typeof payload.message === "string" ? payload.message : "Terjadi kesalahan.");
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
   }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+}
+
+const API_REQUEST_TIMEOUT_MS = 20_000;
+
+export async function api<T>(path: string, options?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort(options?.signal?.reason);
+  if (options?.signal?.aborted) {
+    abortFromCaller();
+  } else {
+    options?.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  try {
+    const response = await fetch(path, {
+      ...options,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) },
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ message: response.statusText }));
+      throw new ApiError(typeof payload.message === "string" ? payload.message : "Terjadi kesalahan.", response.status);
+    }
+    if (response.status === 204) return undefined as T;
+    return await response.json() as T;
+  } catch (error) {
+    if (controller.signal.aborted && !options?.signal?.aborted) {
+      throw new Error("Server tidak merespons. Periksa koneksi lalu coba lagi.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    options?.signal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 export const money = (value: number | string | null | undefined) =>

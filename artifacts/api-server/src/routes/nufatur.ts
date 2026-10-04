@@ -233,7 +233,14 @@ async function requiredGroup(value: unknown, res: Response) {
 router.post("/auth/login", async (req, res) => {
   const username = text(req.body?.username);
   const password = typeof req.body?.password === "string" ? req.body.password : "";
-  const user = (await db.select().from(users).where(eq(users.username, username)).limit(1))[0];
+  let user: typeof users.$inferSelect | undefined;
+  try {
+    user = (await db.select().from(users).where(eq(users.username, username)).limit(1))[0];
+  } catch (error) {
+    logger.error({ err: error }, "Authentication user lookup failed");
+    res.status(503).json({ message: "Layanan login sedang mengalami gangguan. Silakan coba lagi." });
+    return;
+  }
   if (!user || !verifyPassword(password, user.passwordHash)) {
     res.status(401).json({ message: "Username atau password tidak sesuai." });
     return;
@@ -243,7 +250,14 @@ router.post("/auth/login", async (req, res) => {
 });
 
 router.get("/auth/session", async (req, res) => {
-  const user = await currentUser(req);
+  let user;
+  try {
+    user = await currentUser(req);
+  } catch (error) {
+    logger.error({ err: error }, "Authentication session lookup failed");
+    res.status(503).json({ message: "Sesi belum dapat diverifikasi. Silakan coba lagi." });
+    return;
+  }
   if (!user) {
     res.status(401).json({ message: "Belum masuk." });
     return;

@@ -26,7 +26,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { api, formatDate, formatMoneyInput, money, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
+import { ApiError, api, formatDate, formatMoneyInput, money, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
 
 type View = "dashboard" | "groups" | "invoices" | "payments" | "receipts" | "settings";
 type BeforeInstallPromptEvent = Event & {
@@ -169,10 +169,10 @@ function draftFromInvoice(invoice: Invoice): InvoiceDraft {
   };
 }
 
-function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
+function LoginScreen({ onLogin, initialError = "" }: { onLogin: (user: User) => void; initialError?: string }) {
   const [username, setUsername] = useState("nufatur");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(initialError);
   const [busy, setBusy] = useState(false);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -222,9 +222,16 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [bootError, setBootError] = useState("");
 
   useEffect(() => {
-    api<{ user: User }>("/api/auth/session").then((result) => setUser(result.user)).catch(() => undefined).finally(() => setBooting(false));
+    api<{ user: User }>("/api/auth/session")
+      .then((result) => setUser(result.user))
+      .catch((sessionError: unknown) => {
+        if (sessionError instanceof ApiError && sessionError.status === 401) return;
+        setBootError("Ruang kerja belum dapat disiapkan. Periksa koneksi, lalu coba masuk kembali.");
+      })
+      .finally(() => setBooting(false));
   }, []);
 
   useEffect(() => {
@@ -234,7 +241,7 @@ function App() {
   }, [notice]);
 
   if (booting) return <div className="loading-screen"><div className="spinner" /><span>Menyiapkan ruang kerja...</span></div>;
-  if (!user) return <LoginScreen onLogin={setUser} />;
+  if (!user) return <LoginScreen onLogin={setUser} initialError={bootError} />;
 
   async function logout() {
     await api("/api/auth/logout", { method: "POST" });
