@@ -16,6 +16,8 @@ const companySettingsColumns = {
   whatsapp: companySettings.whatsapp,
   email: companySettings.email,
   website: companySettings.website,
+  adminName: companySettings.adminName,
+  adminTitle: companySettings.adminTitle,
   logoDataUrl: companySettings.logoDataUrl,
   signatureDataUrl: companySettings.signatureDataUrl,
   invoiceTitle: companySettings.invoiceTitle,
@@ -31,8 +33,6 @@ export async function getCompanySettings() {
   if (!row) return undefined;
   return {
     ...row,
-    adminName: "Admin NUFATUR",
-    adminTitle: "Penanggung Jawab",
     includeText: "",
     pdfNotes: defaultPdfNotes,
   };

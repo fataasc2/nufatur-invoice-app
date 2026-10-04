@@ -510,6 +510,8 @@ router.patch("/settings", guard(async (req, res, userId) => {
     whatsapp: text(body.whatsapp),
     email: text(body.email),
     website: text(body.website),
+    adminName: text(body.adminName, "Admin NUFATUR"),
+    adminTitle: text(body.adminTitle, "Penanggung Jawab"),
     logoDataUrl: optionalText(body.logoDataUrl),
     signatureDataUrl: optionalText(body.signatureDataUrl),
     invoiceTitle: text(body.invoiceTitle, "INVOICE"),

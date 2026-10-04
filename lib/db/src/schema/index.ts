@@ -29,6 +29,8 @@ export const companySettings = pgTable("company_settings", {
   whatsapp: varchar("whatsapp", { length: 40 }).notNull(),
   email: varchar("email", { length: 160 }).notNull(),
   website: varchar("website", { length: 160 }).notNull(),
+  adminName: varchar("admin_name", { length: 160 }).notNull().default("Admin NUFATUR"),
+  adminTitle: varchar("admin_title", { length: 160 }).notNull().default("Penanggung Jawab"),
   logoDataUrl: text("logo_data_url"),
   signatureDataUrl: text("signature_data_url"),
   invoiceTitle: varchar("invoice_title", { length: 100 }).notNull().default("INVOICE"),
