@@ -725,7 +725,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       discount: String(moneyValue(body.discount as string | number | null | undefined)),
       additionalCost: String(moneyValue(body.additionalCost as string | number | null | undefined)),
       tax: String(moneyValue(body.tax as string | number | null | undefined)),
-      status: normalizeInvoiceStatus(body.status, existing.status.toLowerCase() === "lunas" ? "paid" : "issued"),
+      status: normalizeInvoiceStatus(body.status, existing.status),
       updatedAt: new Date(),
     }).where(eq(invoices.id, id));
     await tx.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
