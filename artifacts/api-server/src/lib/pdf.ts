@@ -7,12 +7,15 @@ const RIGHT = 553;
 const CONTENT_WIDTH = RIGHT - LEFT;
 const FOOTER_Y = 790;
 const CONTENT_BOTTOM = 760;
+const INVOICE_CONTENT_BOTTOM = 774;
 const SIGNATURE_GAP = 14;
+const INVOICE_SIGNATURE_GAP = 6;
 const CONTINUATION_CONTENT_TOP = 88;
 const SIGNATURE_HEIGHT = 106;
+const INVOICE_SIGNATURE_HEIGHT = 90;
 const INVOICE_COLUMNS = [LEFT, 270, 337, 380, 438, RIGHT] as const;
 const INVOICE_DESCRIPTION_WIDTH = INVOICE_COLUMNS[1] - INVOICE_COLUMNS[0] - 12;
-const INVOICE_CONTINUATION_TABLE_Y = 110;
+const INVOICE_CONTINUATION_TABLE_Y = 104;
 const INVOICE_SLOTS = { notesY: 580, notesHeight: 95, signatureY: 684 } as const;
 const DEFAULT_PDF_NOTES = `* Pelunasan dilakukan 40 hari sebelum tanggal keberangkatan.
 * Deposit yang sudah kami terima akan hangus dan dianggap tidak melanjutkan blockseat/paket umroh lagi apabila pelunasan tidak sesuai ketentuan diatas dan seat direlease kembali.
@@ -160,14 +163,14 @@ function drawBrandHeader(doc: PDFKit.PDFDocument, company: PdfCompany, title: st
 }
 
 function drawInvoiceTableHeader(doc: PDFKit.PDFDocument, y: number): number {
-  doc.rect(LEFT, y, CONTENT_WIDTH, 22).fill("#e7f0f4");
+  doc.rect(LEFT, y, CONTENT_WIDTH, 20).fill("#e7f0f4");
   ["DESCRIPTION", "FARE / PRICE", "QTY", "DATE", "TOTAL"].forEach((header, index) => {
-    doc.font("Helvetica-Bold").fontSize(8).fillColor("#244b5e").text(header, INVOICE_COLUMNS[index] + 5, y + 7, {
+    doc.font("Helvetica-Bold").fontSize(8).fillColor("#244b5e").text(header, INVOICE_COLUMNS[index] + 5, y + 6, {
       width: INVOICE_COLUMNS[index + 1] - INVOICE_COLUMNS[index] - 10,
       align: index === 4 ? "right" : "left",
     });
   });
-  return y + 22;
+  return y + 20;
 }
 
 function invoiceItemDescription(item: PdfInvoice["items"][number]): string {
@@ -178,7 +181,7 @@ function invoiceItemDescription(item: PdfInvoice["items"][number]): string {
 
 function invoiceItemRowHeight(doc: PDFKit.PDFDocument, description: string): number {
   doc.font("Helvetica").fontSize(8);
-  return Math.max(26, doc.heightOfString(description || "-", { width: INVOICE_DESCRIPTION_WIDTH, lineGap: 1 }) + 12);
+  return Math.max(24, doc.heightOfString(description || "-", { width: INVOICE_DESCRIPTION_WIDTH, lineGap: 1 }) + 8);
 }
 
 function drawInvoiceItemRow(
@@ -193,12 +196,12 @@ function drawInvoiceItemRow(
   for (let index = 1; index < INVOICE_COLUMNS.length - 1; index += 1) {
     doc.moveTo(INVOICE_COLUMNS[index], y).lineTo(INVOICE_COLUMNS[index], y + height).strokeColor("#cad6dc").stroke();
   }
-  doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(description || "-", LEFT + 6, y + 6, { width: INVOICE_DESCRIPTION_WIDTH, lineGap: 1 });
+  doc.font("Helvetica").fontSize(8).fillColor("#1c2a32").text(description || "-", LEFT + 6, y + 4, { width: INVOICE_DESCRIPTION_WIDTH, lineGap: 1 });
   if (showValues) {
-    doc.text(item.price ? money(item.price) : "-", INVOICE_COLUMNS[1] + 5, y + 6, { width: INVOICE_COLUMNS[2] - INVOICE_COLUMNS[1] - 10, align: "right" });
-    doc.text(displayQty(item.quantity), INVOICE_COLUMNS[2] + 3, y + 6, { width: INVOICE_COLUMNS[3] - INVOICE_COLUMNS[2] - 6, align: "center" });
-    doc.text(item.itemDate ?? "-", INVOICE_COLUMNS[3] + 3, y + 6, { width: INVOICE_COLUMNS[4] - INVOICE_COLUMNS[3] - 6, align: "center" });
-    doc.font("Helvetica-Bold").text(money(item.amount), INVOICE_COLUMNS[4] + 5, y + 6, { width: INVOICE_COLUMNS[5] - INVOICE_COLUMNS[4] - 10, align: "right" });
+    doc.text(item.price ? money(item.price) : "-", INVOICE_COLUMNS[1] + 5, y + 4, { width: INVOICE_COLUMNS[2] - INVOICE_COLUMNS[1] - 10, align: "right" });
+    doc.text(displayQty(item.quantity), INVOICE_COLUMNS[2] + 3, y + 4, { width: INVOICE_COLUMNS[3] - INVOICE_COLUMNS[2] - 6, align: "center" });
+    doc.text(item.itemDate ?? "-", INVOICE_COLUMNS[3] + 3, y + 4, { width: INVOICE_COLUMNS[4] - INVOICE_COLUMNS[3] - 6, align: "center" });
+    doc.font("Helvetica-Bold").text(money(item.amount), INVOICE_COLUMNS[4] + 5, y + 4, { width: INVOICE_COLUMNS[5] - INVOICE_COLUMNS[4] - 10, align: "right" });
   }
   return height;
 }
@@ -225,13 +228,23 @@ function drawInclude(doc: PDFKit.PDFDocument, includeText: string, y: number, ti
 }
 
 function drawSummary(doc: PDFKit.PDFDocument, rows: Array<[string, string]>, y: number): number {
-  rows.forEach(([label, value]) => {
-    const emphasis = label === "TOTAL INVOICE" || label === "SISA PEMBAYARAN" || label === "STATUS";
-    doc.font("Helvetica-Bold").fontSize(emphasis ? 8.5 : 8).fillColor("#244b5e").text(label, 330, y + 4);
-    doc.font(emphasis ? "Helvetica-Bold" : "Helvetica").fillColor(emphasis ? "#16394b" : "#1c2a32").text(value, 453, y + 4, { width: 94, align: "right" });
-    doc.moveTo(330, y + 14).lineTo(RIGHT, y + 14).strokeColor("#d5dde2").lineWidth(0.5).stroke();
+  const columnWidth = CONTENT_WIDTH / 2;
+  for (let index = 0; index < rows.length; index += 2) {
+    for (const [column, row] of [rows[index], rows[index + 1]].entries()) {
+      if (!row) continue;
+      const [label, value] = row;
+      const x = LEFT + column * columnWidth;
+      const emphasis = label === "TOTAL INVOICE" || label === "SISA PEMBAYARAN" || label === "STATUS";
+      doc.font("Helvetica-Bold").fontSize(emphasis ? 8.5 : 8).fillColor("#244b5e").text(label, x + 7, y + 3, { width: 125 });
+      doc.font(emphasis ? "Helvetica-Bold" : "Helvetica").fontSize(8).fillColor(emphasis ? "#16394b" : "#1c2a32")
+        .text(value, x + 132, y + 3, { width: columnWidth - 140, align: "right" });
+      if (column === 1) {
+        doc.moveTo(x, y).lineTo(x, y + 15).strokeColor("#d5dde2").lineWidth(0.5).stroke();
+      }
+    }
+    doc.moveTo(LEFT, y + 15).lineTo(RIGHT, y + 15).strokeColor("#d5dde2").lineWidth(0.5).stroke();
     y += 16;
-  });
+  }
   return y;
 }
 
@@ -242,6 +255,19 @@ function drawNotes(doc: PDFKit.PDFDocument, text: string, y: number, width = CON
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#674f00").text(title, LEFT + 9, y + 7);
   doc.font("Helvetica").fontSize(6.8).fillColor("#3d3520").text(text, LEFT + 9, y + 19, { width: width - 18, lineGap: 0 });
   return y + height + 8;
+}
+
+function bankCardHeight(doc: PDFKit.PDFDocument, text: string): number {
+  doc.font("Helvetica").fontSize(7.5);
+  return doc.heightOfString(text, { width: CONTENT_WIDTH - 16, lineGap: 1 }) + 24;
+}
+
+function drawBankCard(doc: PDFKit.PDFDocument, text: string, y: number, title: string): number {
+  const height = bankCardHeight(doc, text);
+  doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 4).fill("#f4f8f9");
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text(title, LEFT + 8, y + 6);
+  doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(text, LEFT + 8, y + 17, { width: CONTENT_WIDTH - 16, lineGap: 1 });
+  return y + height + 7;
 }
 
 function noteHeight(doc: PDFKit.PDFDocument, text: string, width = 491): number {
@@ -263,23 +289,23 @@ function splitTextToFit(doc: PDFKit.PDFDocument, text: string, width: number, ma
   return [text.slice(0, cut), text.slice(cut)];
 }
 
-function signatureHeight(): number {
-  return SIGNATURE_HEIGHT;
+function signatureHeight(compact = false): number {
+  return compact ? INVOICE_SIGNATURE_HEIGHT : SIGNATURE_HEIGHT;
 }
 
-function drawSignature(doc: PDFKit.PDFDocument, company: PdfCompany, y: number): number {
+function drawSignature(doc: PDFKit.PDFDocument, company: PdfCompany, y: number, compact = false): number {
   const containerWidth = 205;
   const containerX = RIGHT - containerWidth;
   const signatureWidth = containerWidth - 20;
-  const stampSize = 58;
+  const stampSize = compact ? 50 : 58;
   const targetCenterX = containerX + containerWidth / 2 + 26;
   const signatureOpticalOffsetX = 48;
   doc.font("Helvetica").fontSize(8).fillColor("#52616a").text("Hormat kami,", containerX, y, { width: containerWidth, align: "center" });
-  addImage(doc, company.signatureDataUrl, targetCenterX - signatureWidth / 2 + signatureOpticalOffsetX, y + 14, [signatureWidth, 40]);
-  addImage(doc, company.logoDataUrl, targetCenterX - stampSize / 2, y + 10, [stampSize, stampSize], 0.58);
-  doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#16394b").text(company.adminName || "Admin NUFATUR", containerX, y + 76, { width: containerWidth, align: "center" });
-  doc.font("Helvetica").fontSize(7.5).fillColor("#52616a").text(company.adminTitle || "Penanggung Jawab", containerX, y + 91, { width: containerWidth, align: "center" });
-  return y + signatureHeight();
+  addImage(doc, company.signatureDataUrl, targetCenterX - signatureWidth / 2 + signatureOpticalOffsetX, y + (compact ? 12 : 14), [signatureWidth, compact ? 34 : 40]);
+  addImage(doc, company.logoDataUrl, targetCenterX - stampSize / 2, y + (compact ? 8 : 10), [stampSize, stampSize], 0.58);
+  doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#16394b").text(company.adminName || "Admin NUFATUR", containerX, y + (compact ? 65 : 76), { width: containerWidth, align: "center" });
+  doc.font("Helvetica").fontSize(7.5).fillColor("#52616a").text(company.adminTitle || "Penanggung Jawab", containerX, y + (compact ? 80 : 91), { width: containerWidth, align: "center" });
+  return y + signatureHeight(compact);
 }
 
 function formatDepartureDate(value?: string | null): string {
@@ -298,16 +324,16 @@ function drawDeparture(doc: PDFKit.PDFDocument, date: string | null | undefined,
   const dateHeight = departureDate ? doc.heightOfString(departureDate, { width: dateWidth }) : 0;
   doc.font("Helvetica").fontSize(8.5);
   const groupHeight = group ? doc.heightOfString(group, { width: groupWidth, lineGap: 1 }) : 0;
-  const height = Math.max(dateHeight, groupHeight, 13) + 27;
+  const height = Math.max(dateHeight, groupHeight, 13) + 20;
   doc.roundedRect(LEFT, y, CONTENT_WIDTH, height, 5).fill("#e8f5f1");
   if (departureDate) {
-    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("KEBERANGKATAN", LEFT + 10, y + 8);
-    doc.font("Helvetica-Bold").fontSize(10).fillColor("#16394b").text(departureDate, LEFT + 10, y + 20, { width: dateWidth });
+    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("KEBERANGKATAN", LEFT + 10, y + 5);
+    doc.font("Helvetica-Bold").fontSize(10).fillColor("#16394b").text(departureDate, LEFT + 10, y + 15, { width: dateWidth });
   }
   if (group) {
     const groupX = departureDate ? LEFT + 10 + dateWidth + 10 : LEFT + 10;
-    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("PAKET / GROUP", groupX, y + 8);
-    doc.font("Helvetica").fontSize(8.5).fillColor("#16394b").text(group, groupX, y + 20, { width: departureDate ? groupWidth : CONTENT_WIDTH - 20, lineGap: 1 });
+    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("PAKET / GROUP", groupX, y + 5);
+    doc.font("Helvetica").fontSize(8.5).fillColor("#16394b").text(group, groupX, y + 15, { width: departureDate ? groupWidth : CONTENT_WIDTH - 20, lineGap: 1 });
   }
   return y + height + 8;
 }
@@ -346,11 +372,14 @@ function drawBottomBlocks(doc: PDFKit.PDFDocument, company: PdfCompany, notes: s
   return drawSignature(doc, company, y + SIGNATURE_GAP);
 }
 
-function addFooters(doc: PDFKit.PDFDocument, company: PdfCompany): void {
+function addFooters(doc: PDFKit.PDFDocument, company: PdfCompany, allPages = false): void {
   const range = doc.bufferedPageRange();
   if (!company.footer.trim() || range.count === 0) return;
-  doc.switchToPage(range.start + range.count - 1);
-  doc.font("Helvetica").fontSize(7).fillColor("#6b7d86").text(company.footer, LEFT, FOOTER_Y, { width: CONTENT_WIDTH, align: "center" });
+  const firstPage = allPages ? range.start : range.start + range.count - 1;
+  for (let index = firstPage; index < range.start + range.count; index += 1) {
+    doc.switchToPage(index);
+    doc.font("Helvetica").fontSize(7).fillColor("#6b7d86").text(company.footer, LEFT, FOOTER_Y, { width: CONTENT_WIDTH, align: "center" });
+  }
 }
 
 function contentDisposition(name: string, inline: boolean): string {
@@ -389,7 +418,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
   labelValue(doc, "Invoice Number", invoice.number, 366, 112, 145);
   line(doc, 160);
 
-  y = 172;
+  y = 164;
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("CUSTOMER", LEFT, y);
   doc.font("Helvetica-Bold").fontSize(10).fillColor("#1c2a32");
   const customerNameHeight = doc.heightOfString(invoice.customerName || "-", { width: 270 });
@@ -405,7 +434,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
   labelValue(doc, "JATUH TEMPO", invoice.dueDate, 366, y, 145);
   doc.font("Helvetica-Bold").fontSize(9).fillColor(invoice.status === "LUNAS" ? "#16835b" : invoice.status === "JATUH TEMPO" ? "#ba5b17" : "#234252")
     .text(invoice.status, 366, y + 27, { width: 145, align: "right" });
-  y += Math.max(42, 14 + customerNameHeight + (customerDetails ? customerDetailsHeight + 2 : 0), 27 + dueHeight) + 12;
+  y += Math.max(40, 13 + customerNameHeight + (customerDetails ? customerDetailsHeight + 2 : 0), 27 + dueHeight) + 8;
 
   const groupDisplay = invoice.group
     ? [nonEmpty(invoice.group.name), nonEmpty(invoice.group.packageName)].filter(Boolean).join(" • ")
@@ -421,7 +450,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     let showValues = true;
     while (remainingDescription.length > 0) {
       const fullHeight = invoiceItemRowHeight(doc, remainingDescription);
-      const availableHeight = CONTENT_BOTTOM - y;
+      const availableHeight = INVOICE_CONTENT_BOTTOM - y;
       if (fullHeight <= availableHeight) {
         y += drawInvoiceItemRow(doc, item, y, remainingDescription, showValues);
         break;
@@ -448,7 +477,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     while (remainingInclude) {
       doc.font("Helvetica").fontSize(8);
       const fullHeight = Math.max(29, doc.heightOfString(remainingInclude, { width: 415, lineGap: 1 }) + 16);
-      const availableHeight = CONTENT_BOTTOM - y;
+      const availableHeight = INVOICE_CONTENT_BOTTOM - y;
       if (fullHeight <= availableHeight) {
         y = drawInclude(doc, remainingInclude, y, includeTitle);
         break;
@@ -471,14 +500,14 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     }
   }
 
-  const summaryHeight = summaryRows.length * 16;
-  if (y + summaryHeight > CONTENT_BOTTOM) y = nextPage();
-  y = drawSummary(doc, summaryRows, y + 2) + 8;
+  const summaryHeight = Math.ceil(summaryRows.length / 2) * 16;
+  if (y + summaryHeight > INVOICE_CONTENT_BOTTOM) y = nextPage();
+  y = drawSummary(doc, summaryRows, y + 1) + 6;
 
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252");
-  if (y + 30 > CONTENT_BOTTOM) y = nextPage();
+  if (y + 26 > INVOICE_CONTENT_BOTTOM) y = nextPage();
   doc.text("PAYMENT HISTORY", LEFT, y);
-  y += 14;
+  y += 12;
   if (invoice.payments.length === 0) {
     doc.font("Helvetica").fontSize(7.5).fillColor("#52616a").text("Belum ada pembayaran", LEFT + 7, y + 5);
     y += 22;
@@ -488,17 +517,17 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
       const descriptionHeight = doc.heightOfString(payment.description || "-", { width: 230, lineGap: 1 });
       const method = payment.bank ?? payment.method;
       const methodHeight = doc.heightOfString(method, { width: 82, lineGap: 1 });
-      const rowHeight = Math.max(20, descriptionHeight + 8, methodHeight + 8);
-      if (y + rowHeight > CONTENT_BOTTOM) {
+      const rowHeight = Math.max(18, descriptionHeight + 6, methodHeight + 6);
+      if (y + rowHeight > INVOICE_CONTENT_BOTTOM) {
         y = nextPage();
         doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("PAYMENT HISTORY (LANJUTAN)", LEFT, y);
         y += 14;
       }
       doc.rect(LEFT, y, CONTENT_WIDTH, rowHeight).strokeColor("#cad6dc").stroke();
-      doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(payment.description || "-", LEFT + 7, y + 4, { width: 230, lineGap: 1 });
-      doc.text(payment.paymentDate, 290, y + 5, { width: 70 });
-      doc.text(method, 365, y + 4, { width: 82, lineGap: 1 });
-      doc.font("Helvetica-Bold").text(money(payment.amount), 453, y + 5, { width: 94, align: "right" });
+      doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(payment.description || "-", LEFT + 7, y + 3, { width: 230, lineGap: 1 });
+      doc.text(payment.paymentDate, 290, y + 4, { width: 70 });
+      doc.text(method, 365, y + 3, { width: 82, lineGap: 1 });
+      doc.font("Helvetica-Bold").text(money(payment.amount), 453, y + 4, { width: 94, align: "right" });
       y += rowHeight;
       if (index < invoice.payments.length - 1) y += 2;
     });
@@ -506,16 +535,14 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
 
   const bankText = nonEmpty(company.notes);
   if (bankText) {
-    doc.font("Helvetica").fontSize(7.5);
+    y += 8;
     let remainingBankText = bankText;
     let bankTitle = "BANK NUFATUR";
     while (remainingBankText) {
-      const fullHeight = doc.heightOfString(remainingBankText, { width: CONTENT_WIDTH, lineGap: 1 }) + 24;
-      const availableHeight = CONTENT_BOTTOM - y;
+      const fullHeight = bankCardHeight(doc, remainingBankText);
+      const availableHeight = INVOICE_CONTENT_BOTTOM - y;
       if (fullHeight <= availableHeight) {
-        doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text(bankTitle, LEFT, y);
-        doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(remainingBankText, LEFT, y + 13, { width: CONTENT_WIDTH, lineGap: 1 });
-        y += fullHeight + 8;
+        y = drawBankCard(doc, remainingBankText, y, bankTitle);
         break;
       }
       if (availableHeight < 30) {
@@ -523,17 +550,18 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
         bankTitle = "BANK NUFATUR (LANJUTAN)";
         continue;
       }
-      const [visibleText, rest] = splitTextToFit(doc, remainingBankText, CONTENT_WIDTH, availableHeight - 24, 1);
+      const [visibleText, rest] = splitTextToFit(doc, remainingBankText, CONTENT_WIDTH - 16, availableHeight - 24, 1);
       if (!visibleText || visibleText === remainingBankText) {
         y = nextPage();
         bankTitle = "BANK NUFATUR (LANJUTAN)";
         continue;
       }
-      doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text(bankTitle, LEFT, y);
-      doc.font("Helvetica").fontSize(7.5).fillColor("#1c2a32").text(visibleText, LEFT, y + 13, { width: CONTENT_WIDTH, lineGap: 1 });
+      y = drawBankCard(doc, visibleText, y, bankTitle);
       remainingBankText = rest;
-      y = nextPage();
-      bankTitle = "BANK NUFATUR (LANJUTAN)";
+      if (remainingBankText) {
+        y = nextPage();
+        bankTitle = "BANK NUFATUR (LANJUTAN)";
+      }
     }
   }
 
@@ -542,9 +570,9 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
   while (remainingNotes) {
     doc.font("Helvetica").fontSize(6.8);
     const fullHeight = noteHeight(doc, remainingNotes, CONTENT_WIDTH - 18);
-    const availableHeight = CONTENT_BOTTOM - y;
+    const availableHeight = INVOICE_CONTENT_BOTTOM - y;
     if (fullHeight <= availableHeight) {
-      if (y + fullHeight + 8 + SIGNATURE_GAP + signatureHeight() > CONTENT_BOTTOM) {
+      if (y + fullHeight + 8 + INVOICE_SIGNATURE_GAP + signatureHeight(true) > INVOICE_CONTENT_BOTTOM) {
         y = nextPage();
         notesTitle = "CATATAN / PERHATIAN";
         continue;
@@ -569,9 +597,9 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     if (remainingNotes) y = nextPage();
   }
 
-  if (y + SIGNATURE_GAP + signatureHeight() > CONTENT_BOTTOM) y = nextPage();
-  drawSignature(doc, company, y + SIGNATURE_GAP);
-  addFooters(doc, company);
+  if (y + INVOICE_SIGNATURE_GAP + signatureHeight(true) > INVOICE_CONTENT_BOTTOM) y = nextPage();
+  drawSignature(doc, company, y + INVOICE_SIGNATURE_GAP, true);
+  addFooters(doc, company, true);
   doc.end();
 }
 
