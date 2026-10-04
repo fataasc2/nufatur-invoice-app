@@ -13,6 +13,11 @@ FROM node:22-trixie-slim AS runtime
 
 WORKDIR /app
 
+COPY package.json ./package.json
+
+RUN corepack enable \
+    && corepack prepare "$(node -p 'require("./package.json").packageManager')" --activate
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gnupg wget \
     && install -d /usr/share/keyrings \
