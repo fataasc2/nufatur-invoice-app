@@ -692,7 +692,8 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
     return;
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const group = await requiredGroup(body.groupId, res);
+  const groupValue = Object.prototype.hasOwnProperty.call(body, "groupId") ? body.groupId : existing.groupId;
+  const group = await requiredGroup(groupValue, res);
   if (res.headersSent) return;
   const items = Array.isArray(body.items) ? body.items : [];
   for (const [index, item] of items.entries()) {
