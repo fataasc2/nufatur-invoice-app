@@ -128,6 +128,7 @@ export async function dumpDatabase(outputFile: string): Promise<void> {
     "--dbname",
     databaseUrl(),
   ]);
+  await validateBackupFile(outputFile);
 }
 
 export async function validateBackupFile(backupFile: string): Promise<number> {
