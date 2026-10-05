@@ -13,10 +13,15 @@ FROM node:22-trixie-slim AS runtime
 
 WORKDIR /app
 
-COPY package.json ./package.json
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY artifacts/api-server/package.json ./artifacts/api-server/package.json
+COPY lib/api-zod/package.json ./lib/api-zod/package.json
+COPY lib/db/package.json ./lib/db/package.json
 
 RUN corepack enable \
     && corepack prepare "$(node -p 'require("./package.json").packageManager')" --activate
+
+RUN pnpm install --prod --frozen-lockfile --filter @workspace/api-server...
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gnupg wget \
