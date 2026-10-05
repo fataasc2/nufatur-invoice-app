@@ -56,14 +56,17 @@ export function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function nextDocumentNumber(prefix: "INV" | "KWT", numbers: string[]): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const pattern = new RegExp(`^${prefix}\\/NUF\\/${year}\\/${month}\\/(\\d+)$`);
+export function nextDocumentNumber(prefix: "INV" | "KWT", numbers: string[], documentDate = todayIso()): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(documentDate);
+  const parsedDate = new Date(`${documentDate}T00:00:00.000Z`);
+  if (!match || !Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== documentDate) {
+    throw new Error("Tanggal dokumen tidak valid.");
+  }
+  const [, year, month] = match;
+  const pattern = new RegExp(`^(\\d+)\\/${prefix}\\/${month}\\/${year}$`);
   const max = numbers.reduce((highest, value) => {
     const match = value.match(pattern);
     return match ? Math.max(highest, Number(match[1])) : highest;
   }, 0);
-  return `${prefix}/NUF/${year}/${month}/${String(max + 1).padStart(3, "0")}`;
+  return `${String(max + 1).padStart(3, "0")}/${prefix}/${month}/${year}`;
 }

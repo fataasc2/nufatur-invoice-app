@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db, bankAccounts, companySettings, customers, invoiceItems, invoices, payments } from "@workspace/db";
 import { hashPassword } from "./auth";
 import { getCompanySettings } from "./company-settings";
+import { nextDocumentNumber } from "./format";
 
 const companyDefaults = {
   companyName: "PT Nurul Fajar Abinaya",
@@ -33,6 +34,22 @@ export async function ensureSeedData(): Promise<void> {
   }
   if (settings.seededAt) return;
 
+  const today = new Date();
+  const iso = (offset: number) => {
+    const date = new Date(today);
+    date.setDate(date.getDate() + offset);
+    return date.toISOString().slice(0, 10);
+  };
+  const unpaidDate = iso(-14);
+  const paidDate = iso(-20);
+  const overdueDate = iso(-45);
+  const existingInvoiceNumbers = (await db.select({ number: invoices.number }).from(invoices)).map((row) => row.number);
+  const [unpaidNumber, paidNumber, overdueNumber] = [unpaidDate, paidDate, overdueDate].map((invoiceDate) => {
+    const number = nextDocumentNumber("INV", existingInvoiceNumbers, invoiceDate);
+    existingInvoiceNumbers.push(number);
+    return number;
+  });
+
   const seedCustomer = (await db.insert(customers).values({
     kind: "Instansi",
     name: "Dinas Psikologi Angkatan Darat Bandung",
@@ -41,16 +58,9 @@ export async function ensureSeedData(): Promise<void> {
     address: "Bandung, Jawa Barat",
   }).returning())[0];
 
-  const today = new Date();
-  const iso = (offset: number) => {
-    const date = new Date(today);
-    date.setDate(date.getDate() + offset);
-    return date.toISOString().slice(0, 10);
-  };
-
   const [unpaid] = await db.insert(invoices).values({
-    number: "INV/NUF/2026/09/001",
-    invoiceDate: iso(-14),
+    number: unpaidNumber,
+    invoiceDate: unpaidDate,
     dueDate: iso(14),
     reference: "Paket perjalanan dinas — Bandung",
     customerId: seedCustomer.id,
@@ -81,8 +91,8 @@ export async function ensureSeedData(): Promise<void> {
   });
 
   const [paid] = await db.insert(invoices).values({
-    number: "INV/NUF/2026/09/002",
-    invoiceDate: iso(-20),
+    number: paidNumber,
+    invoiceDate: paidDate,
     dueDate: iso(-5),
     reference: "Paket Umrah keluarga",
     customerType: "Keluarga",
@@ -109,8 +119,8 @@ export async function ensureSeedData(): Promise<void> {
   });
 
   const [overdue] = await db.insert(invoices).values({
-    number: "INV/NUF/2026/09/003",
-    invoiceDate: iso(-45),
+    number: overdueNumber,
+    invoiceDate: overdueDate,
     dueDate: iso(-12),
     reference: "Tiket pesawat rombongan",
     customerType: "Perusahaan",

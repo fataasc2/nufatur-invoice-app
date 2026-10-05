@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { and, desc, eq, ilike, or } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import {
   auditLogs,
   bankAccounts,
@@ -612,8 +612,7 @@ router.post("/invoices", guard(async (req, res, userId) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const group = await requiredGroup(body.groupId, res);
   if (res.headersSent) return;
-  const existingNumbers = (await db.select({ number: invoices.number }).from(invoices)).map((row) => row.number);
-  const invoiceNumber = text(body.number, nextDocumentNumber("INV", existingNumbers));
+  const invoiceDate = text(body.invoiceDate, todayIso());
   const items = Array.isArray(body.items) ? body.items : [];
   if (!text(body.customerName) || items.length === 0) {
     res.status(400).json({ message: "Nomor, customer, dan minimal satu item wajib diisi." });
@@ -655,6 +654,9 @@ router.post("/invoices", guard(async (req, res, userId) => {
   }
   const discount = moneyValue(inputItemsSubtotal(items) * discountPercent / 100);
   const created = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:INV:" + invoiceDate.slice(0, 7)}))`);
+    const existingNumbers = (await tx.select({ number: invoices.number }).from(invoices)).map((row) => row.number);
+    const invoiceNumber = text(body.number, nextDocumentNumber("INV", existingNumbers, invoiceDate));
     const customer = (await tx.insert(customers).values({
       kind: text(body.customerType, "Perusahaan"),
       name: text(body.customerName),
@@ -664,7 +666,7 @@ router.post("/invoices", guard(async (req, res, userId) => {
     }).returning())[0];
     const invoice = (await tx.insert(invoices).values({
       number: invoiceNumber,
-      invoiceDate: text(body.invoiceDate, todayIso()),
+      invoiceDate,
       dueDate: text(body.dueDate, todayIso()),
       reference: optionalText(body.reference),
       groupId: group?.id ?? null,
@@ -881,16 +883,18 @@ router.post("/payments/:id/receipt", guard(async (req, res, userId) => {
     res.status(404).json({ message: "Invoice tidak ditemukan." });
     return;
   }
-  const numbers = (await db.select({ number: receipts.number }).from(receipts)).map((row) => row.number);
   const body = req.body ?? {};
+  const receiptDate = text(body.receiptDate, todayIso());
   try {
     const receipt = (await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:KWT:" + receiptDate.slice(0, 7)}))`);
       const alreadyCreated = await tx.select({ id: receipts.id }).from(receipts).where(eq(receipts.paymentId, paymentId)).limit(1);
       if (alreadyCreated[0]) return (await tx.select(receiptColumns).from(receipts).where(eq(receipts.id, alreadyCreated[0].id)).limit(1))[0];
+      const numbers = (await tx.select({ number: receipts.number }).from(receipts)).map((row) => row.number);
       return (await tx.insert(receipts).values({
-        number: text(body.number, nextDocumentNumber("KWT", numbers)),
+        number: text(body.number, nextDocumentNumber("KWT", numbers, receiptDate)),
         paymentId,
-        receiptDate: text(body.receiptDate, todayIso()),
+        receiptDate,
         receivedFrom: text(body.receivedFrom, invoice.customerName),
         amount: payment.amount,
         words: terbilang(payment.amount),
