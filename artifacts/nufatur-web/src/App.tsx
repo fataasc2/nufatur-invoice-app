@@ -137,7 +137,7 @@ function PwaInstallButton() {
   }
 
   return <>
-    <button className="install-button" onClick={() => void install()}><ArrowDownToLine size={15} />Pasang aplikasi</button>
+    <button className="install-button" aria-label="Pasang aplikasi" onClick={() => void install()}><ArrowDownToLine size={15} /><span>Pasang aplikasi</span></button>
     {showIosInstructions && <Modal title="Pasang NUFATUR" onClose={() => setShowIosInstructions(false)}>
       <div className="install-instructions">
         <p>Di Safari, ketuk tombol Bagikan lalu pilih <strong>Tambahkan ke Layar Utama</strong>.</p>
