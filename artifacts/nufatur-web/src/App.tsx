@@ -26,7 +26,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { ApiError, api, formatDate, formatMoneyInput, money, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
+import { ApiError, api, formatDate, formatMoneyInput, money, normalizeMoneyInputValue, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
 
 type View = "dashboard" | "groups" | "invoices" | "payments" | "receipts" | "settings";
 type BeforeInstallPromptEvent = Event & {
@@ -83,11 +83,6 @@ const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
 ];
 
 const emptyItem = (): Item => ({ description: "", flight: "", details: "", itemDate: today(), quantity: "1", price: "", amount: 0 });
-function storedMoneyInput(value: string | number | null | undefined): string {
-  if (value == null || value === "") return "";
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? String(Math.round(parsed)) : "";
-}
 
 const emptyDraft = (): InvoiceDraft => ({
   number: "",
@@ -172,9 +167,9 @@ function draftFromInvoice(invoice: Invoice): InvoiceDraft {
     includeText: invoice.includeText ?? "",
     discount: String(Math.min(100, invoice.discountPercent)),
     discountEdited: false,
-    additionalCost: String(invoice.additionalCost),
-    tax: String(invoice.tax),
-    items: invoice.items.map((item) => ({ ...item, quantity: item.quantity == null ? "" : String(Number(item.quantity)), price: storedMoneyInput(item.price), amount: storedMoneyInput(item.amount) })),
+    additionalCost: normalizeMoneyInputValue(invoice.additionalCost),
+    tax: normalizeMoneyInputValue(invoice.tax),
+    items: invoice.items.map((item) => ({ ...item, quantity: item.quantity == null ? "" : String(Number(item.quantity)), price: normalizeMoneyInputValue(item.price), amount: normalizeMoneyInputValue(item.amount) })),
   };
 }
 

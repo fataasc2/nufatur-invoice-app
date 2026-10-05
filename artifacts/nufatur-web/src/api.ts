@@ -146,14 +146,30 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   }
 }
 
-export const money = (value: number | string | null | undefined) =>
-  new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(Number(value ?? 0));
 export const parseMoneyInput = (value: string | number | null | undefined): number => {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  const digits = String(value ?? "").replace(/[^0-9-]/g, "");
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+
+  const decimal = /^-?\d+(?:\.\d{1,2})?$/.exec(raw);
+  if (decimal) return Math.round(Number(raw));
+
+  const westernGroupedDecimal = /^-?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/.exec(raw);
+  if (westernGroupedDecimal) return Math.round(Number(raw.replaceAll(",", "")));
+
+  const indonesianGroupedDecimal = /^-?\d{1,3}(?:\.\d{3})+,\d{1,2}$/.exec(raw);
+  if (indonesianGroupedDecimal) return Math.round(Number(raw.replaceAll(".", "").replace(",", ".")));
+
+  const digits = raw.replace(/[^0-9-]/g, "");
   const parsed = Number(digits);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+export const normalizeMoneyInputValue = (value: string | number | null | undefined): string =>
+  value == null || String(value).trim() === "" ? "" : String(parseMoneyInput(value));
+
+export const money = (value: number | string | null | undefined) =>
+  new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(parseMoneyInput(value));
 
 export const formatMoneyInput = (value: string | number | null | undefined): string => {
   const raw = String(value ?? "");
