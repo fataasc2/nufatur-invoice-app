@@ -56,6 +56,7 @@ export type Invoice = {
   payments: Payment[];
   subtotal: number;
   discount: number;
+  discountPercent: number;
   additionalCost: number;
   tax: number;
   total: number;

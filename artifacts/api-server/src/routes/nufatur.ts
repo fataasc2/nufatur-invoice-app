@@ -159,6 +159,18 @@ async function invoiceBalanceForClient(client: InvoiceTransactionClient, id: num
   return { ...invoice, items, payments: invoicePayments, subtotal, total, paid, remaining, discount, additionalCost, tax };
 }
 
+function inputItemsSubtotal(items: unknown[]): number {
+  return items.reduce<number>((sum, item) => {
+    const entry = item as Record<string, unknown>;
+    const quantity = entry.quantity === "" || entry.quantity == null ? null : numberValue(entry.quantity as string | number);
+    const price = entry.price === "" || entry.price == null ? null : numberValue(entry.price as string | number);
+    const amount = quantity != null && price != null
+      ? moneyValue(quantity * price)
+      : moneyValue(entry.amount as string | number | null | undefined);
+    return sum + amount;
+  }, 0);
+}
+
 async function invoiceRecord(id: number) {
   const invoice = await invoiceRow(id);
   if (!invoice) return null;
@@ -181,6 +193,7 @@ async function invoiceRecord(id: number) {
     paid,
     remaining,
     discount,
+    discountPercent: subtotal > 0 ? Math.min(100, discount / subtotal * 100) : 0,
     additionalCost,
     tax,
     status,
@@ -629,13 +642,18 @@ router.post("/invoices", guard(async (req, res, userId) => {
       return;
     }
   }
-  const discount = Number(body.discount ?? 0);
+  const discountPercent = Number(body.discount ?? 0);
   const additionalCost = Number(body.additionalCost ?? 0);
   const tax = Number(body.tax ?? 0);
-  if ([discount, additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
-    res.status(400).json({ message: "Nilai diskon, biaya tambahan, atau pajak tidak valid." });
+  if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+    res.status(400).json({ message: "Diskon harus berupa persentase antara 0% dan 100%." });
     return;
   }
+  if ([additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
+    res.status(400).json({ message: "Nilai biaya tambahan atau pajak tidak valid." });
+    return;
+  }
+  const discount = moneyValue(inputItemsSubtotal(items) * discountPercent / 100);
   const created = await db.transaction(async (tx) => {
     const customer = (await tx.insert(customers).values({
       kind: text(body.customerType, "Perusahaan"),
@@ -657,7 +675,7 @@ router.post("/invoices", guard(async (req, res, userId) => {
       customerEmail: optionalText(body.customerEmail),
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
-      discount: String(moneyValue(body.discount as string | number | null | undefined)),
+      discount: String(discount),
       additionalCost: String(moneyValue(body.additionalCost as string | number | null | undefined)),
       tax: String(moneyValue(body.tax as string | number | null | undefined)),
       status: normalizeInvoiceStatus(body.status, "issued"),
@@ -719,13 +737,24 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       return;
     }
   }
-  const discount = Number(body.discount ?? 0);
+  const discountPercent = Number(body.discount ?? 0);
   const additionalCost = Number(body.additionalCost ?? 0);
   const tax = Number(body.tax ?? 0);
-  if ([discount, additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
-    res.status(400).json({ message: "Nilai diskon, biaya tambahan, atau pajak tidak valid." });
+  if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+    res.status(400).json({ message: "Diskon harus berupa persentase antara 0% dan 100%." });
     return;
   }
+  if ([additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
+    res.status(400).json({ message: "Nilai biaya tambahan atau pajak tidak valid." });
+    return;
+  }
+  const subtotal = inputItemsSubtotal(items);
+  const preserveLegacyDiscount = body.discountEdited !== true
+    && subtotal === existing.subtotal
+    && (existing.subtotal === 0 || existing.discount > existing.subtotal);
+  const discount = preserveLegacyDiscount
+    ? moneyValue(existing.discount)
+    : moneyValue(subtotal * discountPercent / 100);
   await db.transaction(async (tx) => {
     await tx.update(invoices).set({
       number: text(body.number, existing.number),
@@ -739,7 +768,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       customerEmail: optionalText(body.customerEmail),
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
-      discount: String(moneyValue(body.discount as string | number | null | undefined)),
+      discount: String(discount),
       additionalCost: String(moneyValue(body.additionalCost as string | number | null | undefined)),
       tax: String(moneyValue(body.tax as string | number | null | undefined)),
       status: normalizeInvoiceStatus(body.status, existing.status),

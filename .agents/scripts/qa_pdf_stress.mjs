@@ -104,7 +104,7 @@ async function createCase(testCase) {
       customerAddress: "Alamat customer pengujian NUFATUR",
       includeText: testCase.invoice.includeText,
       notes: testCase.invoice.notes,
-      discount: testCase.id === 1 ? "0" : testCase.id === 2 ? "1000000" : "1500000",
+      discount: testCase.id === 1 ? "0" : testCase.id === 2 ? "10" : "15",
       tax: testCase.id === 1 ? "0" : testCase.id === 2 ? "750000" : "1250000",
       additionalCost: testCase.id === 1 ? "0" : testCase.id === 2 ? "250000" : "500000",
       items: testCase.items,

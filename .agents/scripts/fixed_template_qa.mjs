@@ -38,7 +38,7 @@ async function cleanup() {
 async function create(test, index) {
   const departureDates = ["2026-10-15", "2026-11-15", "2026-12-15", "2027-01-15"];
   const group = (await request("/groups", { method: "POST", body: JSON.stringify({ code: `${prefix}${test.key}-GROUP`, name: `${prefix}${test.key}`, departureDate: departureDates[index], packageName: `Paket ${test.key}` }) })).group;
-  const invoice = (await request("/invoices", { method: "POST", body: JSON.stringify({ number: `${prefix}${test.key}`, invoiceDate: "2026-09-24", dueDate: "2026-12-31", groupId: group.id, customerName: test.customerName, customerType: "Perusahaan", customerAddress: "Alamat QA fixed template", includeText: test.includeText, notes: test.notes, discount: test.key === "FULL" ? "500000" : "0", tax: test.key === "FULL" ? "250000" : "0", additionalCost: test.key === "FULL" ? "100000" : "0", items: test.items }) })).invoice;
+  const invoice = (await request("/invoices", { method: "POST", body: JSON.stringify({ number: `${prefix}${test.key}`, invoiceDate: "2026-09-24", dueDate: "2026-12-31", groupId: group.id, customerName: test.customerName, customerType: "Perusahaan", customerAddress: "Alamat QA fixed template", includeText: test.includeText, notes: test.notes, discount: test.key === "FULL" ? "5" : "0", tax: test.key === "FULL" ? "250000" : "0", additionalCost: test.key === "FULL" ? "100000" : "0", items: test.items }) })).invoice;
   const paymentIds = [];
   for (const payment of test.payments) paymentIds.push((await request(`/invoices/${invoice.id}/payments`, { method: "POST", body: JSON.stringify({ ...payment, paymentDate: "2026-09-24" }) })).payment.id);
   let receipt = null;
