@@ -63,6 +63,10 @@ function statusFor(invoice: { status: string; dueDate: string; total: number; pa
   return "BELUM LUNAS";
 }
 
+function invoiceTotalValue(subtotal: number, discount: number, cashback: number, tax: number): number {
+  return subtotal - discount - cashback + tax;
+}
+
 const invoiceColumns = {
   id: invoices.id,
   number: invoices.number,
@@ -151,12 +155,12 @@ async function invoiceBalanceForClient(client: InvoiceTransactionClient, id: num
   const invoicePayments = await client.select().from(payments).where(eq(payments.invoiceId, id)).orderBy(desc(payments.paymentDate));
   const subtotal = items.reduce((sum, item) => sum + moneyValue(item.amount), 0);
   const discount = moneyValue(invoice.discount);
-  const additionalCost = moneyValue(invoice.additionalCost);
+  const cashback = moneyValue(invoice.additionalCost);
   const tax = moneyValue(invoice.tax);
-  const total = Math.max(0, subtotal - discount + additionalCost + tax);
+  const total = Math.max(0, invoiceTotalValue(subtotal, discount, cashback, tax));
   const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
   const remaining = Math.max(0, total - paid);
-  return { ...invoice, items, payments: invoicePayments, subtotal, total, paid, remaining, discount, additionalCost, tax };
+  return { ...invoice, items, payments: invoicePayments, subtotal, total, paid, remaining, discount, additionalCost: cashback, tax };
 }
 
 function inputItemsSubtotal(items: unknown[]): number {
@@ -178,9 +182,9 @@ async function invoiceRecord(id: number) {
   const invoicePayments = await db.select().from(payments).where(eq(payments.invoiceId, id)).orderBy(desc(payments.paymentDate));
   const subtotal = items.reduce((sum, item) => sum + moneyValue(item.amount), 0);
   const discount = moneyValue(invoice.discount);
-  const additionalCost = moneyValue(invoice.additionalCost);
+  const cashback = moneyValue(invoice.additionalCost);
   const tax = moneyValue(invoice.tax);
-  const total = Math.max(0, subtotal - discount + additionalCost + tax);
+  const total = Math.max(0, invoiceTotalValue(subtotal, discount, cashback, tax));
   const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
   const remaining = Math.max(0, total - paid);
   const status = statusFor({ status: invoice.status, dueDate: invoice.dueDate, total, paid });
@@ -194,7 +198,7 @@ async function invoiceRecord(id: number) {
     remaining,
     discount,
     discountPercent: subtotal > 0 ? Math.min(100, discount / subtotal * 100) : 0,
-    additionalCost,
+    additionalCost: cashback,
     tax,
     status,
   };
@@ -642,17 +646,22 @@ router.post("/invoices", guard(async (req, res, userId) => {
     }
   }
   const discountPercent = Number(body.discount ?? 0);
-  const additionalCost = Number(body.additionalCost ?? 0);
+  const cashback = Number(body.additionalCost ?? 0);
   const tax = Number(body.tax ?? 0);
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
     res.status(400).json({ message: "Diskon harus berupa persentase antara 0% dan 100%." });
     return;
   }
-  if ([additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
-    res.status(400).json({ message: "Nilai biaya tambahan atau pajak tidak valid." });
+  if ([cashback, tax].some((value) => !Number.isFinite(value) || value < 0)) {
+    res.status(400).json({ message: "Nilai cashback atau pajak tidak valid." });
     return;
   }
-  const discount = moneyValue(inputItemsSubtotal(items) * discountPercent / 100);
+  const subtotal = inputItemsSubtotal(items);
+  const discount = moneyValue(subtotal * discountPercent / 100);
+  if (invoiceTotalValue(subtotal, discount, cashback, tax) < 0) {
+    res.status(400).json({ message: "Cashback terlalu besar untuk total invoice setelah diskon." });
+    return;
+  }
   const created = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:INV:" + invoiceDate.slice(0, 7)}))`);
     const existingNumbers = (await tx.select({ number: invoices.number }).from(invoices)).map((row) => row.number);
@@ -740,14 +749,14 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
     }
   }
   const discountPercent = Number(body.discount ?? 0);
-  const additionalCost = Number(body.additionalCost ?? 0);
+  const cashback = Number(body.additionalCost ?? 0);
   const tax = Number(body.tax ?? 0);
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
     res.status(400).json({ message: "Diskon harus berupa persentase antara 0% dan 100%." });
     return;
   }
-  if ([additionalCost, tax].some((value) => !Number.isFinite(value) || value < 0)) {
-    res.status(400).json({ message: "Nilai biaya tambahan atau pajak tidak valid." });
+  if ([cashback, tax].some((value) => !Number.isFinite(value) || value < 0)) {
+    res.status(400).json({ message: "Nilai cashback atau pajak tidak valid." });
     return;
   }
   const subtotal = inputItemsSubtotal(items);
@@ -757,6 +766,10 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
   const discount = preserveLegacyDiscount
     ? moneyValue(existing.discount)
     : moneyValue(subtotal * discountPercent / 100);
+  if (invoiceTotalValue(subtotal, discount, cashback, tax) < 0) {
+    res.status(400).json({ message: "Cashback terlalu besar untuk total invoice setelah diskon." });
+    return;
+  }
   await db.transaction(async (tx) => {
     await tx.update(invoices).set({
       number: text(body.number, existing.number),

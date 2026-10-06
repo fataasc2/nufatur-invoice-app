@@ -396,7 +396,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     ["Subtotal", money(invoice.subtotal)],
     ["Diskon", numberValue(invoice.discount) ? money(invoice.discount) : "-"],
     ["Pajak", numberValue(invoice.tax) ? money(invoice.tax) : "-"],
-    ["CASHBACK", numberValue(invoice.additionalCost) ? money(invoice.additionalCost) : "-"],
+    ["CASHBACK", numberValue(invoice.additionalCost) ? money(-invoice.additionalCost) : "-"],
     ["TOTAL INVOICE", money(invoice.total)],
     ["DIBAYAR", money(invoice.paid)],
     ["SISA PEMBAYARAN", money(invoice.remaining)],
