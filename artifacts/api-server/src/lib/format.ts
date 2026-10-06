@@ -6,7 +6,7 @@ export function numberValue(value: string | number | null | undefined): number {
 export function moneyValue(value: string | number | null | undefined): number {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, Math.round(parsed));
+  return Math.round(parsed);
 }
 
 export function money(value: string | number | null | undefined): string {

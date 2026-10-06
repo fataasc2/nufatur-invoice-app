@@ -67,6 +67,43 @@ function invoiceTotalValue(subtotal: number, discount: number, cashback: number,
   return subtotal - discount - cashback + tax;
 }
 
+function itemAmountValue(entry: Record<string, unknown>): number {
+  const quantity = entry.quantity === "" || entry.quantity == null ? null : numberValue(entry.quantity as string | number | null | undefined);
+  const price = entry.price === "" || entry.price == null ? null : numberValue(entry.price as string | number | null | undefined);
+  return quantity != null && price != null ? moneyValue(quantity * price) : moneyValue(entry.amount as string | number | null | undefined);
+}
+
+function itemCashbackValue(entry: Record<string, unknown>): number {
+  const value = entry.cashback ?? entry.additionalCost ?? entry.additional_fee ?? entry.additionalFee ?? 0;
+  return moneyValue(value as string | number | null | undefined);
+}
+
+function rawItemCashbackValue(entry: Record<string, unknown>): unknown {
+  return entry.cashback ?? entry.additionalCost ?? entry.additional_fee ?? entry.additionalFee;
+}
+
+function invoiceCashbackValue(items: Array<Record<string, unknown>>, legacyCashback = 0): number {
+  const itemCashback = items.reduce((sum, item) => sum + itemCashbackValue(item), 0);
+  return itemCashback > 0 ? itemCashback : moneyValue(legacyCashback);
+}
+
+function cashbackValidationMessage(items: Array<Record<string, unknown>>): string | null {
+  for (const [index, item] of items.entries()) {
+    const rawCashback = rawItemCashbackValue(item);
+    if (rawCashback != null && rawCashback !== "" && !Number.isFinite(Number(rawCashback))) {
+      return `Nilai cashback item ${index + 1} tidak valid.`;
+    }
+    const cashback = itemCashbackValue(item);
+    if (cashback < 0) {
+      return "Cashback per pax tidak boleh negatif.";
+    }
+    if (cashback > itemAmountValue(item)) {
+      return `Cashback item ${index + 1} tidak boleh melebihi nilai item.`;
+    }
+  }
+  return null;
+}
+
 const invoiceColumns = {
   id: invoices.id,
   number: invoices.number,
@@ -155,7 +192,7 @@ async function invoiceBalanceForClient(client: InvoiceTransactionClient, id: num
   const invoicePayments = await client.select().from(payments).where(eq(payments.invoiceId, id)).orderBy(desc(payments.paymentDate));
   const subtotal = items.reduce((sum, item) => sum + moneyValue(item.amount), 0);
   const discount = moneyValue(invoice.discount);
-  const cashback = moneyValue(invoice.additionalCost);
+  const cashback = invoiceCashbackValue(items as Array<Record<string, unknown>>, moneyValue(invoice.additionalCost));
   const tax = moneyValue(invoice.tax);
   const total = Math.max(0, invoiceTotalValue(subtotal, discount, cashback, tax));
   const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
@@ -182,7 +219,7 @@ async function invoiceRecord(id: number) {
   const invoicePayments = await db.select().from(payments).where(eq(payments.invoiceId, id)).orderBy(desc(payments.paymentDate));
   const subtotal = items.reduce((sum, item) => sum + moneyValue(item.amount), 0);
   const discount = moneyValue(invoice.discount);
-  const cashback = moneyValue(invoice.additionalCost);
+  const cashback = invoiceCashbackValue(items as Array<Record<string, unknown>>, moneyValue(invoice.additionalCost));
   const tax = moneyValue(invoice.tax);
   const total = Math.max(0, invoiceTotalValue(subtotal, discount, cashback, tax));
   const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
@@ -646,22 +683,34 @@ router.post("/invoices", guard(async (req, res, userId) => {
     }
   }
   const discountPercent = Number(body.discount ?? 0);
-  const cashback = Number(body.additionalCost ?? 0);
   const tax = Number(body.tax ?? 0);
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
     res.status(400).json({ message: "Diskon harus berupa persentase antara 0% dan 100%." });
     return;
   }
-  if ([cashback, tax].some((value) => !Number.isFinite(value) || value < 0)) {
-    res.status(400).json({ message: "Nilai cashback atau pajak tidak valid." });
+  if (!Number.isFinite(tax) || tax < 0) {
+    res.status(400).json({ message: "Nilai pajak tidak valid." });
     return;
   }
   const subtotal = inputItemsSubtotal(items);
   const discount = moneyValue(subtotal * discountPercent / 100);
-  if (invoiceTotalValue(subtotal, discount, cashback, tax) < 0) {
+  const legacyCashback = Number(body.additionalCost ?? 0);
+  const itemCashbackEntries = items.map((item) => item as Record<string, unknown>);
+  if (!Number.isFinite(legacyCashback) || legacyCashback < 0) {
+    res.status(400).json({ message: "Nilai cashback tidak valid." });
+    return;
+  }
+  const itemTotalCashback = invoiceCashbackValue(itemCashbackEntries, legacyCashback);
+  const cashbackError = cashbackValidationMessage(itemCashbackEntries);
+  if (cashbackError) {
+    res.status(400).json({ message: cashbackError });
+    return;
+  }
+  if (invoiceTotalValue(subtotal, discount, itemTotalCashback, tax) < 0) {
     res.status(400).json({ message: "Cashback terlalu besar untuk total invoice setelah diskon." });
     return;
   }
+  const invoiceAdditionalCost = itemTotalCashback;
   const created = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:INV:" + invoiceDate.slice(0, 7)}))`);
     const existingNumbers = (await tx.select({ number: invoices.number }).from(invoices)).map((row) => row.number);
@@ -687,7 +736,7 @@ router.post("/invoices", guard(async (req, res, userId) => {
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
       discount: String(discount),
-      additionalCost: String(moneyValue(body.additionalCost as string | number | null | undefined)),
+      additionalCost: String(invoiceAdditionalCost),
       tax: String(moneyValue(body.tax as string | number | null | undefined)),
       status: normalizeInvoiceStatus(body.status, "issued"),
     }).returning(invoiceColumns))[0];
@@ -695,6 +744,7 @@ router.post("/invoices", guard(async (req, res, userId) => {
       const quantity = item.quantity === "" || item.quantity == null ? null : numberValue(item.quantity as string | number | null | undefined);
       const price = item.price === "" || item.price == null ? null : numberValue(item.price as string | number | null | undefined);
       const amount = quantity != null && price != null ? moneyValue(quantity * price) : moneyValue(item.amount as string | number | null | undefined);
+      const cashback = itemCashbackValue(item);
       return {
         invoiceId: invoice.id,
         position,
@@ -705,6 +755,7 @@ router.post("/invoices", guard(async (req, res, userId) => {
         quantity: quantity == null ? null : String(quantity),
         price: price == null ? null : String(price),
         amount: String(amount),
+        cashback: String(cashback),
       };
     }));
     return invoice;
@@ -749,14 +800,27 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
     }
   }
   const discountPercent = Number(body.discount ?? 0);
-  const cashback = Number(body.additionalCost ?? 0);
+  const legacyCashback = Number(body.additionalCost ?? 0);
+  const itemCashbackEntries = items.map((item) => item as Record<string, unknown>);
+  if (!Number.isFinite(legacyCashback) || legacyCashback < 0) {
+    res.status(400).json({ message: "Nilai cashback tidak valid." });
+    return;
+  }
+  const itemTotalCashback = body.cashbackEdited === true
+    ? itemCashbackEntries.reduce((sum, item) => sum + itemCashbackValue(item), 0)
+    : invoiceCashbackValue(itemCashbackEntries, legacyCashback);
+  const cashbackError = cashbackValidationMessage(itemCashbackEntries);
   const tax = Number(body.tax ?? 0);
   if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
     res.status(400).json({ message: "Diskon harus berupa persentase antara 0% dan 100%." });
     return;
   }
-  if ([cashback, tax].some((value) => !Number.isFinite(value) || value < 0)) {
-    res.status(400).json({ message: "Nilai cashback atau pajak tidak valid." });
+  if (!Number.isFinite(tax) || tax < 0) {
+    res.status(400).json({ message: "Nilai pajak tidak valid." });
+    return;
+  }
+  if (cashbackError) {
+    res.status(400).json({ message: cashbackError });
     return;
   }
   const subtotal = inputItemsSubtotal(items);
@@ -766,7 +830,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
   const discount = preserveLegacyDiscount
     ? moneyValue(existing.discount)
     : moneyValue(subtotal * discountPercent / 100);
-  if (invoiceTotalValue(subtotal, discount, cashback, tax) < 0) {
+  if (invoiceTotalValue(subtotal, discount, itemTotalCashback, tax) < 0) {
     res.status(400).json({ message: "Cashback terlalu besar untuk total invoice setelah diskon." });
     return;
   }
@@ -784,7 +848,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       customerAddress: optionalText(body.customerAddress),
       notes: optionalText(body.notes),
       discount: String(discount),
-      additionalCost: String(moneyValue(body.additionalCost as string | number | null | undefined)),
+      additionalCost: String(itemTotalCashback),
       tax: String(moneyValue(body.tax as string | number | null | undefined)),
       status: normalizeInvoiceStatus(body.status, existing.status),
       updatedAt: new Date(),
@@ -794,6 +858,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       await tx.insert(invoiceItems).values(items.map((item: Record<string, unknown>, position: number) => {
         const quantity = item.quantity === "" || item.quantity == null ? null : numberValue(item.quantity as string | number | null | undefined);
         const price = item.price === "" || item.price == null ? null : numberValue(item.price as string | number | null | undefined);
+        const cashback = itemCashbackValue(item);
         return {
           invoiceId: id,
           position,
@@ -804,6 +869,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
           quantity: quantity == null ? null : String(quantity),
           price: price == null ? null : String(price),
           amount: String(quantity != null && price != null ? moneyValue(quantity * price) : moneyValue(item.amount as string | number | null | undefined)),
+          cashback: String(cashback),
         };
       }));
     }

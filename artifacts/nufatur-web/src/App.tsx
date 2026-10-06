@@ -49,6 +49,7 @@ type InvoiceDraft = {
   includeText: string;
   discount: string;
   discountEdited: boolean;
+  cashbackEdited: boolean;
   additionalCost: string;
   tax: string;
   items: Item[];
@@ -82,7 +83,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
   { id: "settings", label: "Pengaturan", icon: Settings },
 ];
 
-const emptyItem = (): Item => ({ description: "", flight: "", details: "", itemDate: today(), quantity: "1", price: "", amount: 0 });
+const emptyItem = (): Item => ({ description: "", flight: "", details: "", itemDate: today(), quantity: "1", price: "", amount: 0, cashback: "0" });
 
 const emptyDraft = (): InvoiceDraft => ({
   number: "",
@@ -99,6 +100,7 @@ const emptyDraft = (): InvoiceDraft => ({
   includeText: "",
   discount: "0",
   discountEdited: false,
+  cashbackEdited: false,
   additionalCost: "0",
   tax: "0",
   items: [emptyItem()],
@@ -167,9 +169,10 @@ function draftFromInvoice(invoice: Invoice): InvoiceDraft {
     includeText: invoice.includeText ?? "",
     discount: String(Math.min(100, invoice.discountPercent)),
     discountEdited: false,
+    cashbackEdited: false,
     additionalCost: normalizeMoneyInputValue(invoice.additionalCost),
     tax: normalizeMoneyInputValue(invoice.tax),
-    items: invoice.items.map((item) => ({ ...item, quantity: item.quantity == null ? "" : String(Number(item.quantity)), price: normalizeMoneyInputValue(item.price), amount: normalizeMoneyInputValue(item.amount) })),
+    items: invoice.items.map((item) => ({ ...item, quantity: item.quantity == null ? "" : String(Number(item.quantity)), price: normalizeMoneyInputValue(item.price), amount: normalizeMoneyInputValue(item.amount), cashback: normalizeMoneyInputValue(item.cashback ?? 0) })),
   };
 }
 
@@ -396,26 +399,44 @@ function InvoiceForm({ initial, onClose, onCreateGroup, onSaved, onError }: { in
   const computedSubtotal = draft.items.reduce((sum, item) => sum + Math.round(Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount)), 0);
   const discountPercent = Number(draft.discount);
   const discountAmount = Math.round(computedSubtotal * discountPercent / 100);
-  const cashbackAmount = parseMoneyInput(draft.additionalCost);
+  const itemCashbackAmount = draft.items.reduce((sum, item) => sum + parseMoneyInput(item.cashback), 0);
+  const totalCashbackAmount = draft.cashbackEdited || itemCashbackAmount > 0
+    ? itemCashbackAmount
+    : parseMoneyInput(draft.additionalCost);
   const taxAmount = parseMoneyInput(draft.tax);
-  const total = Math.max(0, computedSubtotal - discountAmount - cashbackAmount + taxAmount);
+  const total = Math.max(0, computedSubtotal - discountAmount - totalCashbackAmount + taxAmount);
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (!draft.customerName.trim()) { onError("Nama customer wajib diisi."); return; }
     if (!draft.items.some((item) => item.description.trim())) { onError("Tambahkan minimal satu item invoice."); return; }
     if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) { onError("Diskon harus berupa persentase antara 0% dan 100%."); return; }
-    if (cashbackAmount < 0 || taxAmount < 0) { onError("Cashback dan pajak tidak boleh negatif."); return; }
-    if (computedSubtotal - discountAmount - cashbackAmount + taxAmount < 0) { onError("Cashback terlalu besar untuk total invoice setelah diskon."); return; }
+    if (draft.items.some((item) => parseMoneyInput(item.cashback) < 0)) { onError("Cashback per pax tidak boleh negatif."); return; }
+    const invalidCashbackItem = draft.items.find((item) => {
+      const itemAmount = Math.round(Number(item.quantity) && parseMoneyInput(item.price)
+        ? Number(item.quantity) * parseMoneyInput(item.price)
+        : parseMoneyInput(item.amount));
+      return parseMoneyInput(item.cashback) > itemAmount;
+    });
+    if (invalidCashbackItem) { onError("Cashback per pax tidak boleh melebihi nilai item."); return; }
+    if (taxAmount < 0) { onError("Pajak tidak boleh negatif."); return; }
+    if (computedSubtotal - discountAmount - totalCashbackAmount + taxAmount < 0) { onError("Cashback terlalu besar untuk total invoice setelah diskon."); return; }
     setBusy(true);
-    const payload = { ...draft, groupId: draft.groupId ? Number(draft.groupId) : null, discount: discountPercent, additionalCost: cashbackAmount, tax: taxAmount, items: draft.items.map((item) => ({ ...item, price: parseMoneyInput(item.price), amount: Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount) })) };
+    const payload = { ...draft, groupId: draft.groupId ? Number(draft.groupId) : null, discount: discountPercent, additionalCost: totalCashbackAmount, tax: taxAmount, items: draft.items.map((item) => ({ ...item, cashback: parseMoneyInput(item.cashback), price: parseMoneyInput(item.price), amount: Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount) })) };
     try { await api(draft.id ? `/api/invoices/${draft.id}` : "/api/invoices", { method: draft.id ? "PUT" : "POST", body: JSON.stringify(payload) }); onSaved(); } catch (error) { onError(error instanceof Error ? error.message : "Gagal menyimpan invoice."); } finally { setBusy(false); }
   }
   function updateItem(index: number, patch: Partial<Item>) {
-    setDraft((current) => ({ ...current, items: current.items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) }));
+    setDraft((current) => ({
+      ...current,
+      cashbackEdited: current.cashbackEdited || (
+        Object.prototype.hasOwnProperty.call(patch, "cashback")
+        && parseMoneyInput(patch.cashback) !== parseMoneyInput(current.items[index]?.cashback)
+      ),
+      items: current.items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
+    }));
   }
   return <Modal title={draft.id ? "Edit invoice" : "Buat invoice baru"} onClose={onClose} wide><form onSubmit={save} className="form-content">
     <div className="form-section"><div className="section-heading"><h3>Informasi invoice</h3><span>Grup keberangkatan opsional; tanggal grup digunakan bila dipilih.</span></div><div className="form-grid four"><label>Nomor invoice<input value={draft.number} onChange={(event) => update("number", event.target.value)} placeholder="Kosongkan untuk nomor otomatis" /></label><label>Tanggal<input type="date" value={draft.invoiceDate} onChange={(event) => update("invoiceDate", event.target.value)} /></label><label>Jatuh tempo<input type="date" value={draft.dueDate} onChange={(event) => update("dueDate", event.target.value)} /></label><label>Jenis customer<select value={draft.customerType} onChange={(event) => update("customerType", event.target.value)}><option>Perusahaan</option><option>Instansi</option><option>Keluarga</option><option>Perorangan</option></select></label></div><div className="form-grid two"><label>Grup Keberangkatan (opsional)<select value={draft.groupId} onChange={(event) => update("groupId", event.target.value)}><option value="">Tanpa grup (invoice personal)</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name} - {formatDate(group.departureDate)}</option>)}</select><button type="button" className="text-button" onClick={onCreateGroup}><Plus size={14} />Tambah Grup Keberangkatan</button>{draft.groupId && (() => { const group = groups.find((item) => String(item.id) === draft.groupId); return group ? <small>{formatDate(group.departureDate)} • {group.packageName}</small> : null; })()}</label><label>Nama customer / perusahaan<input required value={draft.customerName} onChange={(event) => update("customerName", event.target.value)} /></label><label>Reference<input value={draft.reference} onChange={(event) => update("reference", event.target.value)} placeholder="Contoh: Paket wisata keluarga" /></label><label>WhatsApp<input value={draft.customerWhatsapp} onChange={(event) => update("customerWhatsapp", event.target.value)} /></label><label>Email<input type="email" value={draft.customerEmail} onChange={(event) => update("customerEmail", event.target.value)} /></label><label className="span-two">Alamat<textarea value={draft.customerAddress} onChange={(event) => update("customerAddress", event.target.value)} rows={2} /></label></div></div>
-    <div className="form-section"><div className="section-heading"><h3>Detail invoice</h3><button type="button" className="button small secondary" onClick={() => setDraft((current) => ({ ...current, items: [...current.items, emptyItem()] }))}><Plus size={15} />Tambah item</button></div><div className="item-editor">{draft.items.map((item, index) => <div className="item-row" key={index}><div className="item-row-number">{index + 1}</div><label>Deskripsi<input value={item.description} onChange={(event) => updateItem(index, { description: event.target.value })} /></label><label>Qty / Pax<input type="number" min="0" value={item.quantity ?? ""} onChange={(event) => updateItem(index, { quantity: event.target.value })} /></label><label>Harga<MoneyInput min="0" value={item.price ?? ""} onChange={(value) => updateItem(index, { price: value })} /></label><label>Tanggal<input type="date" value={item.itemDate ?? ""} onChange={(event) => updateItem(index, { itemDate: event.target.value })} /></label><strong className="item-amount">{money(Math.round(Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount)))}</strong><button type="button" className="icon-button danger-icon" disabled={draft.items.length === 1} onClick={() => setDraft((current) => ({ ...current, items: current.items.filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 size={16} /></button><label className="item-detail">Flight / keterangan<textarea value={item.details ?? ""} onChange={(event) => updateItem(index, { details: event.target.value })} rows={1} placeholder="Opsional" /></label></div>)}</div><div className="totals-editor"><div><span>Subtotal</span><strong>{money(computedSubtotal)}</strong></div><label>Diskon<span className="percentage-input"><input type="number" min="0" max="100" step="any" required value={draft.discount} onChange={(event) => update("discount", event.target.value)} /><span>%</span></span></label><div><span>Potongan diskon</span><strong>{money(discountAmount)}</strong></div><label>Cashback<MoneyInput min="0" value={draft.additionalCost} onChange={(value) => update("additionalCost", value)} /><small>Total invoice akan berkurang sebesar cashback.</small></label><label>Pajak<MoneyInput min="0" value={draft.tax} onChange={(value) => update("tax", value)} /></label><div className="total-highlight"><span>Total invoice</span><strong>{money(total)}</strong></div></div></div>
+    <div className="form-section"><div className="section-heading"><h3>Detail invoice</h3><button type="button" className="button small secondary" onClick={() => setDraft((current) => ({ ...current, items: [...current.items, emptyItem()] }))}><Plus size={15} />Tambah item</button></div><div className="item-editor">{draft.items.map((item, index) => <div className="item-row" key={index}><div className="item-row-number">{index + 1}</div><label>Deskripsi<input value={item.description} onChange={(event) => updateItem(index, { description: event.target.value })} /></label><label>Qty / Pax<input type="number" min="0" value={item.quantity ?? ""} onChange={(event) => updateItem(index, { quantity: event.target.value })} /></label><label>Harga<MoneyInput min="0" value={item.price ?? ""} onChange={(value) => updateItem(index, { price: value })} /></label><label>Cashback<MoneyInput min="0" value={item.cashback ?? "0"} onChange={(value) => updateItem(index, { cashback: value })} /></label><label>Tanggal<input type="date" value={item.itemDate ?? ""} onChange={(event) => updateItem(index, { itemDate: event.target.value })} /></label><strong className="item-amount">{money(Math.round(Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount)))}</strong><button type="button" className="icon-button danger-icon" disabled={draft.items.length === 1} onClick={() => setDraft((current) => ({ ...current, items: current.items.filter((_, itemIndex) => itemIndex !== index) }))}><Trash2 size={16} /></button><label className="item-detail">Flight / keterangan<textarea value={item.details ?? ""} onChange={(event) => updateItem(index, { details: event.target.value })} rows={1} placeholder="Opsional" /></label></div>)}</div>{!draft.cashbackEdited && itemCashbackAmount === 0 && parseMoneyInput(draft.additionalCost) > 0 && <p className="legacy-cashback-note">Invoice ini memiliki cashback legacy {money(draft.additionalCost)} pada tingkat invoice. Nilai ini tetap dipakai jika disimpan tanpa mengubah cashback per item. Saat cashback item diubah, nilai legacy digantikan oleh jumlah cashback per item.</p>}<div className="totals-editor"><div><span>Subtotal</span><strong>{money(computedSubtotal)}</strong></div><label>Diskon<span className="percentage-input"><input type="number" min="0" max="100" step="any" required value={draft.discount} onChange={(event) => update("discount", event.target.value)} /><span>%</span></span></label><div><span>Potongan diskon</span><strong>{money(discountAmount)}</strong></div><div><span>Total cashback</span><strong>{money(totalCashbackAmount)}</strong></div><label>Pajak<MoneyInput min="0" value={draft.tax} onChange={(value) => update("tax", value)} /></label><div className="total-highlight"><span>Total invoice</span><strong>{money(total)}</strong></div></div></div>
     <div className="form-section"><div className="form-grid two"><label>Include PDF<textarea value={draft.includeText} onChange={(event) => update("includeText", event.target.value)} rows={4} placeholder={"Contoh:\n• Tiket Pesawat\n• Hotel\n• Transportasi"} /></label><label>Catatan invoice<textarea value={draft.notes} onChange={(event) => update("notes", event.target.value)} rows={4} placeholder="Catatan tambahan untuk customer atau tim..." /></label></div></div>
     <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : draft.id ? "Simpan perubahan" : "Simpan invoice"}</button></div>
   </form></Modal>;

@@ -106,6 +106,7 @@ export const invoiceItems = pgTable("invoice_items", {
   quantity: numeric("quantity", { precision: 12, scale: 2 }),
   price: numeric("price", { precision: 16, scale: 2 }),
   amount: numeric("amount", { precision: 16, scale: 2 }).notNull().default("0"),
+  cashback: numeric("cashback", { precision: 16, scale: 2 }).notNull().default("0"),
 });
 
 export const payments = pgTable("payments", {

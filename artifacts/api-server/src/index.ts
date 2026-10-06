@@ -17,8 +17,12 @@ async function start(): Promise<void> {
         ADD COLUMN IF NOT EXISTS admin_name varchar(160) NOT NULL DEFAULT 'Admin NUFATUR',
         ADD COLUMN IF NOT EXISTS admin_title varchar(160) NOT NULL DEFAULT 'Penanggung Jawab'
     `);
+    await pool.query(`
+      ALTER TABLE invoice_items
+        ADD COLUMN IF NOT EXISTS cashback numeric(16, 2) NOT NULL DEFAULT '0'
+    `);
   } catch (error) {
-    logger.error({ err: error }, "Company settings schema initialization failed");
+    logger.error({ err: error }, "Database schema initialization failed");
     process.exit(1);
   }
 

@@ -8,6 +8,7 @@ export type Item = {
   quantity?: string | null;
   price?: string | null;
   amount: string | number;
+  cashback?: string | number | null;
 };
 export type Payment = {
   id: number;

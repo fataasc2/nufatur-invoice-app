@@ -13,7 +13,7 @@ const INVOICE_SIGNATURE_GAP = 6;
 const CONTINUATION_CONTENT_TOP = 88;
 const SIGNATURE_HEIGHT = 106;
 const INVOICE_SIGNATURE_HEIGHT = 90;
-const INVOICE_COLUMNS = [LEFT, 270, 337, 380, 438, RIGHT] as const;
+const INVOICE_COLUMNS = [LEFT, 235, 295, 335, 390, 465, RIGHT] as const;
 const INVOICE_DESCRIPTION_WIDTH = INVOICE_COLUMNS[1] - INVOICE_COLUMNS[0] - 12;
 const INVOICE_CONTINUATION_TABLE_Y = 104;
 const INVOICE_SLOTS = { notesY: 580, notesHeight: 95, signatureY: 684 } as const;
@@ -53,7 +53,7 @@ type PdfInvoice = {
   customerAddress?: string | null;
   notes?: string | null;
   includeText?: string | null;
-  items: Array<{ description: string; flight?: string | null; details?: string | null; itemDate?: string | null; quantity?: string | null; price?: string | null; amount: string }>;
+  items: Array<{ description: string; flight?: string | null; details?: string | null; itemDate?: string | null; quantity?: string | null; price?: string | null; amount: string; cashback?: string | number | null }>;
   payments: Array<{ paymentDate: string; description: string; amount: string; bank?: string | null; method: string }>;
   subtotal: number;
   discount: number;
@@ -164,10 +164,10 @@ function drawBrandHeader(doc: PDFKit.PDFDocument, company: PdfCompany, title: st
 
 function drawInvoiceTableHeader(doc: PDFKit.PDFDocument, y: number): number {
   doc.rect(LEFT, y, CONTENT_WIDTH, 20).fill("#e7f0f4");
-  ["DESCRIPTION", "FARE / PRICE", "QTY", "DATE", "TOTAL"].forEach((header, index) => {
+  ["DESCRIPTION", "FARE / PRICE", "QTY", "DATE", "CASHBACK", "TOTAL"].forEach((header, index) => {
     doc.font("Helvetica-Bold").fontSize(8).fillColor("#244b5e").text(header, INVOICE_COLUMNS[index] + 5, y + 6, {
       width: INVOICE_COLUMNS[index + 1] - INVOICE_COLUMNS[index] - 10,
-      align: index === 4 ? "right" : "left",
+      align: index >= 4 ? "right" : "left",
     });
   });
   return y + 20;
@@ -201,7 +201,8 @@ function drawInvoiceItemRow(
     doc.text(item.price ? money(item.price) : "-", INVOICE_COLUMNS[1] + 5, y + 4, { width: INVOICE_COLUMNS[2] - INVOICE_COLUMNS[1] - 10, align: "right" });
     doc.text(displayQty(item.quantity), INVOICE_COLUMNS[2] + 3, y + 4, { width: INVOICE_COLUMNS[3] - INVOICE_COLUMNS[2] - 6, align: "center" });
     doc.text(item.itemDate ?? "-", INVOICE_COLUMNS[3] + 3, y + 4, { width: INVOICE_COLUMNS[4] - INVOICE_COLUMNS[3] - 6, align: "center" });
-    doc.font("Helvetica-Bold").text(money(item.amount), INVOICE_COLUMNS[4] + 5, y + 4, { width: INVOICE_COLUMNS[5] - INVOICE_COLUMNS[4] - 10, align: "right" });
+    doc.text(money(item.cashback), INVOICE_COLUMNS[4] + 5, y + 4, { width: INVOICE_COLUMNS[5] - INVOICE_COLUMNS[4] - 10, align: "right" });
+    doc.font("Helvetica-Bold").text(money(item.amount), INVOICE_COLUMNS[5] + 5, y + 4, { width: INVOICE_COLUMNS[6] - INVOICE_COLUMNS[5] - 10, align: "right" });
   }
   return height;
 }
@@ -396,7 +397,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     ["Subtotal", money(invoice.subtotal)],
     ["Diskon", numberValue(invoice.discount) ? money(invoice.discount) : "-"],
     ["Pajak", numberValue(invoice.tax) ? money(invoice.tax) : "-"],
-    ["CASHBACK", numberValue(invoice.additionalCost) ? money(-invoice.additionalCost) : "-"],
+    ["TOTAL CASHBACK", numberValue(invoice.additionalCost) ? money(-invoice.additionalCost) : "-"],
     ["TOTAL INVOICE", money(invoice.total)],
     ["DIBAYAR", money(invoice.paid)],
     ["SISA PEMBAYARAN", money(invoice.remaining)],
