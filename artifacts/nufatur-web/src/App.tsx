@@ -399,7 +399,11 @@ function InvoiceForm({ initial, onClose, onCreateGroup, onSaved, onError }: { in
   const computedSubtotal = draft.items.reduce((sum, item) => sum + Math.round(Number(item.quantity) && parseMoneyInput(item.price) ? Number(item.quantity) * parseMoneyInput(item.price) : parseMoneyInput(item.amount)), 0);
   const discountPercent = Number(draft.discount);
   const discountAmount = Math.round(computedSubtotal * discountPercent / 100);
-  const itemCashbackAmount = draft.items.reduce((sum, item) => sum + parseMoneyInput(item.cashback), 0);
+  const itemCashbackAmount = draft.items.reduce((sum, item) => {
+    const quantity = Number(item.quantity || 0);
+    const cashback = parseMoneyInput(item.cashback);
+    return sum + (quantity > 0 ? quantity * cashback : cashback);
+  }, 0);
   const totalCashbackAmount = draft.cashbackEdited || itemCashbackAmount > 0
     ? itemCashbackAmount
     : parseMoneyInput(draft.additionalCost);
@@ -411,13 +415,15 @@ function InvoiceForm({ initial, onClose, onCreateGroup, onSaved, onError }: { in
     if (!draft.items.some((item) => item.description.trim())) { onError("Tambahkan minimal satu item invoice."); return; }
     if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) { onError("Diskon harus berupa persentase antara 0% dan 100%."); return; }
     if (draft.items.some((item) => parseMoneyInput(item.cashback) < 0)) { onError("Cashback per pax tidak boleh negatif."); return; }
-    const invalidCashbackItem = draft.items.find((item) => {
+    if (draft.items.some((item) => {
+      const quantity = Number(item.quantity || 0);
+      const cashback = parseMoneyInput(item.cashback);
       const itemAmount = Math.round(Number(item.quantity) && parseMoneyInput(item.price)
         ? Number(item.quantity) * parseMoneyInput(item.price)
         : parseMoneyInput(item.amount));
-      return parseMoneyInput(item.cashback) > itemAmount;
-    });
-    if (invalidCashbackItem) { onError("Cashback per pax tidak boleh melebihi nilai item."); return; }
+      const totalCashback = quantity > 0 ? quantity * cashback : cashback;
+      return totalCashback > itemAmount;
+    })) { onError("Total cashback item tidak boleh melebihi nilai item."); return; }
     if (taxAmount < 0) { onError("Pajak tidak boleh negatif."); return; }
     if (computedSubtotal - discountAmount - totalCashbackAmount + taxAmount < 0) { onError("Cashback terlalu besar untuk total invoice setelah diskon."); return; }
     setBusy(true);

@@ -78,12 +78,19 @@ function itemCashbackValue(entry: Record<string, unknown>): number {
   return moneyValue(value as string | number | null | undefined);
 }
 
+function itemCashbackTotalValue(entry: Record<string, unknown>): number {
+  const cashback = itemCashbackValue(entry);
+  const quantity = entry.quantity === "" || entry.quantity == null ? null : numberValue(entry.quantity as string | number | null | undefined);
+  if (quantity == null || quantity <= 0) return cashback;
+  return moneyValue(quantity * cashback);
+}
+
 function rawItemCashbackValue(entry: Record<string, unknown>): unknown {
   return entry.cashback ?? entry.additionalCost ?? entry.additional_fee ?? entry.additionalFee;
 }
 
 function invoiceCashbackValue(items: Array<Record<string, unknown>>, legacyCashback = 0): number {
-  const itemCashback = items.reduce((sum, item) => sum + itemCashbackValue(item), 0);
+  const itemCashback = items.reduce((sum, item) => sum + itemCashbackTotalValue(item), 0);
   return itemCashback > 0 ? itemCashback : moneyValue(legacyCashback);
 }
 
@@ -97,7 +104,8 @@ function cashbackValidationMessage(items: Array<Record<string, unknown>>): strin
     if (cashback < 0) {
       return "Cashback per pax tidak boleh negatif.";
     }
-    if (cashback > itemAmountValue(item)) {
+    const totalCashback = itemCashbackTotalValue(item);
+    if (totalCashback > itemAmountValue(item)) {
       return `Cashback item ${index + 1} tidak boleh melebihi nilai item.`;
     }
   }
@@ -807,7 +815,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
     return;
   }
   const itemTotalCashback = body.cashbackEdited === true
-    ? itemCashbackEntries.reduce((sum, item) => sum + itemCashbackValue(item), 0)
+    ? itemCashbackEntries.reduce((sum, item) => sum + itemCashbackTotalValue(item), 0)
     : invoiceCashbackValue(itemCashbackEntries, legacyCashback);
   const cashbackError = cashbackValidationMessage(itemCashbackEntries);
   const tax = Number(body.tax ?? 0);
