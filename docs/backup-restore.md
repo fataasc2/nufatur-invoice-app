@@ -18,6 +18,10 @@ pnpm --filter @workspace/api-server run bootstrap
 
 Do not run `bootstrap` after restoring a complete backup. A restored database already contains users, settings, and business data.
 
+## Schema updates
+
+This repository applies schema changes with Drizzle Kit `push`; it does not maintain versioned SQL migration files. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. For an existing environment, take and verify a backup, confirm `DATABASE_URL` targets the intended database, review the Drizzle Kit changes, and run `pnpm --filter @workspace/db run push` as a separate controlled release step before deploying the API. Do not run `bootstrap` for an existing database.
+
 ## Local smoke test
 
 Use a non-production PostgreSQL database and configured PostgreSQL client tools:

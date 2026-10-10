@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import {
   auditLogs,
   bankAccounts,
@@ -9,6 +9,9 @@ import {
   db,
   invoiceItems,
   invoices,
+  operationalExpenseAllocations,
+  operationalExpenses,
+  operationalVendorPayments,
   payments,
   receipts,
   users,
@@ -166,6 +169,68 @@ async function groupRow(id: number) {
 
 async function groupForInvoice(groupId: number | null | undefined) {
   return groupId ? groupRow(groupId) : null;
+}
+
+function normalizeExpenseStatus(totalAmount: number, paidAmount: number): string {
+  if (totalAmount <= 0) return "BELUM DIBAYAR";
+  if (paidAmount >= totalAmount) return "LUNAS";
+  if (paidAmount > 0) return "DIBAYAR SEBAGIAN";
+  return "BELUM DIBAYAR";
+}
+
+async function operationalExpenseRecord(expenseId: number) {
+  const expense = (await db.select().from(operationalExpenses).where(eq(operationalExpenses.id, expenseId)).limit(1))[0];
+  if (!expense) return null;
+  const group = expense.groupId ? await groupRow(expense.groupId) : null;
+  const allocations = await db.select().from(operationalExpenseAllocations).where(eq(operationalExpenseAllocations.expenseId, expenseId)).orderBy(desc(operationalExpenseAllocations.createdAt));
+  const vendorPayments = await db.select().from(operationalVendorPayments).where(eq(operationalVendorPayments.expenseId, expenseId)).orderBy(desc(operationalVendorPayments.paymentDate), desc(operationalVendorPayments.createdAt));
+  const paymentIds = [...new Set(allocations.map((allocation) => allocation.paymentId))];
+  const sourcePayments = paymentIds.length
+    ? await db.select({ id: payments.id, invoiceId: payments.invoiceId, number: invoices.number }).from(payments).innerJoin(invoices, eq(invoices.id, payments.invoiceId)).where(inArray(payments.id, paymentIds))
+    : [];
+  const sourceMap = new Map(sourcePayments.map((payment) => [payment.id, payment]));
+  const totalAmount = moneyValue(expense.totalAmount);
+  const activeAllocations = allocations.filter((entry) => entry.isActive);
+  const allocationsTotal = activeAllocations.reduce((sum, entry) => sum + moneyValue(entry.amount), 0);
+  const vendorTotal = vendorPayments.filter((entry) => entry.status === "posted").reduce((sum, entry) => sum + moneyValue(entry.amount), 0);
+  const remainingBalance = Math.max(0, totalAmount - vendorTotal);
+  const availableAllocation = activeAllocations.reduce((sum, allocation) => {
+    const used = vendorPayments
+      .filter((payment) => payment.allocationId === allocation.id && payment.status === "posted")
+      .reduce((allocationSum, payment) => allocationSum + moneyValue(payment.amount), 0);
+    return sum + Math.max(0, moneyValue(allocation.amount) - used);
+  }, 0);
+  const shortfall = Math.max(0, remainingBalance - availableAllocation);
+  const status = normalizeExpenseStatus(totalAmount, vendorTotal);
+  return {
+    ...expense,
+    number: expense.number,
+    totalAmount: totalAmount,
+    status,
+    group,
+    allocatedAmount: allocationsTotal,
+    usedAmount: vendorTotal,
+    remainingBalance,
+    availableAllocation,
+    shortfall,
+    allocations: allocations.map((allocation) => {
+      const allocationPayments = vendorPayments.filter((payment) => payment.allocationId === allocation.id && payment.status === "posted");
+      const used = allocationPayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+      return {
+        ...allocation,
+        amount: moneyValue(allocation.amount),
+        isActive: Boolean(allocation.isActive),
+        paymentNumber: sourceMap.get(allocation.paymentId)?.number ?? null,
+        available: allocation.isActive ? Math.max(0, moneyValue(allocation.amount) - used) : 0,
+        used,
+      };
+    }),
+    vendorPayments: vendorPayments.map((payment) => ({
+      ...payment,
+      amount: moneyValue(payment.amount),
+      status: payment.status,
+    })),
+  };
 }
 
 async function invoiceRow(id: number) {
@@ -342,10 +407,22 @@ router.get("/admin/database/backup", guard(async (_req, res) => {
     res.setHeader("Content-Length", details.size);
     res.setHeader("Content-Disposition", `attachment; filename="nufatur-backup-${new Date().toISOString().slice(0, 10)}.dump"`);
     const stream = createReadStream(backupFile);
-    const cleanup = () => void removeTempBackupDirectory(directory);
+    let cleanupStarted = false;
+    const cleanup = () => {
+      if (cleanupStarted) return;
+      cleanupStarted = true;
+      void removeTempBackupDirectory(directory).catch((error: unknown) => {
+        logger.warn({ err: error }, "Temporary backup files could not be removed");
+      });
+    };
     res.once("finish", cleanup);
     res.once("close", cleanup);
-    stream.on("error", cleanup);
+    stream.once("error", (error) => {
+      cleanup();
+      logger.error({ err: error }, "Database backup stream failed");
+      if (res.headersSent) res.destroy(error);
+      else res.status(503).json({ message: "Backup database tidak tersedia." });
+    });
     stream.pipe(res);
   } catch (error) {
     await removeTempBackupDirectory(directory);
@@ -463,14 +540,36 @@ router.get("/groups/:id", guard(async (req, res) => {
     return;
   }
   const records = (await allInvoiceRecords()).filter((invoice) => invoice.groupId === group.id);
+  const groupExpenses = await db.select().from(operationalExpenses).where(eq(operationalExpenses.groupId, group.id));
+  const expenseSummaries = (await Promise.all(groupExpenses.map((expense) => operationalExpenseRecord(expense.id)))).filter((expense): expense is NonNullable<typeof expense> => expense != null);
+  const groupPayments = await db.select({ amount: payments.amount }).from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .where(and(eq(invoices.groupId, group.id), ne(invoices.status, "draft"), ne(invoices.status, "cancelled")));
+  const customerPaymentsTotal = groupPayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+  const operationalTotal = expenseSummaries.reduce((sum, expense) => sum + expense.totalAmount, 0);
+  const vendorPaidTotal = expenseSummaries.reduce((sum, expense) => sum + expense.usedAmount, 0);
+  const vendorRemainingTotal = expenseSummaries.reduce((sum, expense) => sum + expense.remainingBalance, 0);
+  const allocatedAvailableTotal = expenseSummaries.reduce((sum, expense) => sum + expense.availableAllocation, 0);
+  const shortfallTotal = expenseSummaries.reduce((sum, expense) => sum + expense.shortfall, 0);
+  const unallocatedFunds = Math.max(0, customerPaymentsTotal - expenseSummaries.reduce((sum, expense) => sum + expense.allocatedAmount, 0));
   res.json({
     group: {
       ...group,
       invoiceCount: records.length,
       invoiceTotal: records.reduce((sum, invoice) => sum + invoice.total, 0),
-      paymentTotal: records.reduce((sum, invoice) => sum + invoice.paid, 0),
+      paymentTotal: customerPaymentsTotal,
       remainingTotal: records.reduce((sum, invoice) => sum + invoice.remaining, 0),
+      financialSummary: {
+        customerPaymentTotal: customerPaymentsTotal,
+        operationalCostTotal: operationalTotal,
+        vendorPaidTotal,
+        vendorRemainingTotal,
+        availableAllocationTotal: allocatedAvailableTotal,
+        unallocatedFunds,
+        shortfallTotal,
+      },
       invoices: records,
+      expenses: expenseSummaries,
     },
   });
 }));
@@ -783,6 +882,16 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
   const groupValue = Object.prototype.hasOwnProperty.call(body, "groupId") ? body.groupId : existing.groupId;
   const group = await requiredGroup(groupValue, res);
   if (res.headersSent) return;
+  const activeFundAllocation = (await db.select({ id: operationalExpenseAllocations.id })
+    .from(operationalExpenseAllocations)
+    .innerJoin(payments, eq(payments.id, operationalExpenseAllocations.paymentId))
+    .where(and(eq(payments.invoiceId, id), eq(operationalExpenseAllocations.isActive, true)))
+    .limit(1))[0];
+  const nextInvoiceStatus = normalizeInvoiceStatus(body.status, existing.status);
+  if (activeFundAllocation && ((group?.id ?? null) !== existing.groupId || nextInvoiceStatus === "cancelled")) {
+    res.status(409).json({ message: "Keberangkatan/status invoice tidak dapat diubah selama pembayaran invoice masih menjadi sumber alokasi aktif." });
+    return;
+  }
   const items = Array.isArray(body.items) ? body.items : [];
   for (const [index, item] of items.entries()) {
     const entry = item as Record<string, unknown>;
@@ -858,7 +967,7 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
       discount: String(discount),
       additionalCost: String(itemTotalCashback),
       tax: String(moneyValue(body.tax as string | number | null | undefined)),
-      status: normalizeInvoiceStatus(body.status, existing.status),
+      status: nextInvoiceStatus,
       updatedAt: new Date(),
     }).where(eq(invoices.id, id));
     await tx.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id));
@@ -888,6 +997,15 @@ router.put("/invoices/:id", guard(async (req, res, userId) => {
 
 router.delete("/invoices/:id", guard(async (req, res, userId) => {
   const id = Number(req.params.id);
+  const allocatedPayment = (await db.select({ id: operationalExpenseAllocations.id })
+    .from(operationalExpenseAllocations)
+    .innerJoin(payments, eq(payments.id, operationalExpenseAllocations.paymentId))
+    .where(eq(payments.invoiceId, id))
+    .limit(1))[0];
+  if (allocatedPayment) {
+    res.status(409).json({ message: "Invoice memiliki histori alokasi dana operasional dan tidak dapat dihapus." });
+    return;
+  }
   await db.delete(invoices).where(eq(invoices.id, id));
   await audit(userId, "delete", "invoice", id);
   res.status(204).end();
@@ -1072,6 +1190,489 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     departureDate: invoice.group?.departureDate,
     groupName: invoice.group ? `${invoice.group.name} • ${invoice.group.packageName}` : null,
   }, req.query.inline === "1");
+}));
+
+async function operationalFinanceSummary(): Promise<{
+  totalCustomerPayments: number;
+  totalUnallocatedFunds: number;
+  totalAllocatedAvailable: number;
+  totalOperationalCosts: number;
+  totalVendorPayments: number;
+  totalVendorRemaining: number;
+  totalShortfall: number;
+  dueSoonCount: number;
+  overdueCount: number;
+  expenses: Array<{ id: number; number: string; name: string; vendor: string; totalAmount: number; dueDate?: string | null; status: string; allocatedAmount: number; usedAmount: number; remainingBalance: number; availableAllocation: number; shortfall: number; group?: { id: number; code: string; name: string; departureDate: string } | null; }>;
+}> {
+  const paymentRows = await db.select({ id: payments.id, amount: payments.amount }).from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .where(and(ne(invoices.status, "draft"), ne(invoices.status, "cancelled")));
+  const paymentAmountTotal = paymentRows.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+  const activeAllocations = await db.select({ paymentId: operationalExpenseAllocations.paymentId, amount: operationalExpenseAllocations.amount }).from(operationalExpenseAllocations)
+    .where(eq(operationalExpenseAllocations.isActive, true));
+  const allocationsByPayment = new Map<number, number>();
+  for (const allocation of activeAllocations) {
+    allocationsByPayment.set(allocation.paymentId, (allocationsByPayment.get(allocation.paymentId) ?? 0) + moneyValue(allocation.amount));
+  }
+  const totalUnallocatedFunds = paymentRows.reduce((sum, payment) => sum + Math.max(0, moneyValue(payment.amount) - (allocationsByPayment.get(payment.id) ?? 0)), 0);
+  const expenses = await db.select().from(operationalExpenses).orderBy(desc(operationalExpenses.dueDate), desc(operationalExpenses.createdAt));
+  const expenseRecords = (await Promise.all(expenses.map((expense) => operationalExpenseRecord(expense.id)))).filter((expense): expense is NonNullable<typeof expense> => expense != null);
+  const totalOperationalCosts = expenseRecords.reduce((sum, expense) => sum + expense.totalAmount, 0);
+  const totalVendorPayments = expenseRecords.reduce((sum, expense) => sum + expense.usedAmount, 0);
+  const totalVendorRemaining = expenseRecords.reduce((sum, expense) => sum + expense.remainingBalance, 0);
+  const totalAllocatedAvailable = expenseRecords.reduce((sum, expense) => sum + expense.availableAllocation, 0);
+  const totalShortfall = expenseRecords.reduce((sum, expense) => sum + expense.shortfall, 0);
+  return {
+    totalCustomerPayments: paymentAmountTotal,
+    totalUnallocatedFunds,
+    totalAllocatedAvailable,
+    totalOperationalCosts,
+    totalVendorPayments,
+    totalVendorRemaining,
+    totalShortfall,
+    dueSoonCount: expenseRecords.filter((expense) => expense.remainingBalance > 0 && expense.dueDate != null && expense.dueDate >= todayIso() && expense.dueDate <= new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)).length,
+    overdueCount: expenseRecords.filter((expense) => expense.remainingBalance > 0 && expense.dueDate != null && expense.dueDate < todayIso()).length,
+    expenses: expenseRecords.map((expense) => ({
+      id: expense.id,
+      number: expense.number,
+      name: expense.name,
+      vendor: expense.vendor,
+      totalAmount: expense.totalAmount,
+      dueDate: expense.dueDate,
+      status: expense.status,
+      allocatedAmount: expense.allocatedAmount,
+      usedAmount: expense.usedAmount,
+      remainingBalance: expense.remainingBalance,
+      availableAllocation: expense.availableAllocation,
+      shortfall: expense.shortfall,
+      group: expense.group ? { id: expense.group.id, code: expense.group.code, name: expense.group.name, departureDate: expense.group.departureDate } : null,
+    })),
+  };
+}
+
+async function lockOperationalFinance(tx: Pick<typeof db, "execute">): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('nufatur-operational-finance'))`);
+}
+
+function positiveId(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function positiveMoney(value: unknown): number | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 99_999_999_999_999 ? parsed : null;
+}
+
+function validIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function sendOperationalError(res: Response, result: { error?: string; status?: number }): boolean {
+  if (!result.error) return false;
+  if (typeof result.status !== "number") throw new Error("Operational finance error response is missing its HTTP status.");
+  res.status(result.status).json({ message: result.error });
+  return true;
+}
+
+router.get("/operational-finance", guard(async (_req, res) => {
+  res.json(await operationalFinanceSummary());
+}));
+
+router.get("/operational-finance/dashboard", guard(async (_req, res) => {
+  res.json(await operationalFinanceSummary());
+}));
+
+router.get("/operational-finance/expenses", guard(async (_req, res) => {
+  const expenses = await db.select().from(operationalExpenses).orderBy(desc(operationalExpenses.dueDate), desc(operationalExpenses.createdAt));
+  const rows = (await Promise.all(expenses.map((expense) => operationalExpenseRecord(expense.id)))).filter((expense) => expense != null);
+  res.json({ expenses: rows });
+}));
+
+router.get("/operational-finance/fund-sources", guard(async (req, res) => {
+  const search = text(req.query.search).toLowerCase();
+  const paymentRows = await db.select({
+    id: payments.id,
+    paymentDate: payments.paymentDate,
+    amount: payments.amount,
+    description: payments.description,
+    invoiceId: invoices.id,
+    invoiceNumber: invoices.number,
+    customerName: invoices.customerName,
+    groupId: invoices.groupId,
+  }).from(payments)
+    .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+    .where(and(ne(invoices.status, "draft"), ne(invoices.status, "cancelled")))
+    .orderBy(desc(payments.paymentDate), desc(payments.createdAt));
+  const groupRows = await db.select(groupColumns).from(departureGroups);
+  const groupMap = new Map(groupRows.map((group) => [group.id, group]));
+  const allocationRows = await db.select({ paymentId: operationalExpenseAllocations.paymentId, amount: operationalExpenseAllocations.amount })
+    .from(operationalExpenseAllocations).where(eq(operationalExpenseAllocations.isActive, true));
+  const allocatedByPayment = new Map<number, number>();
+  for (const allocation of allocationRows) {
+    allocatedByPayment.set(allocation.paymentId, (allocatedByPayment.get(allocation.paymentId) ?? 0) + moneyValue(allocation.amount));
+  }
+  const sources = paymentRows.map((payment) => {
+    const amount = moneyValue(payment.amount);
+    const allocatedAmount = allocatedByPayment.get(payment.id) ?? 0;
+    const group = payment.groupId ? groupMap.get(payment.groupId) ?? null : null;
+    return {
+      id: payment.id,
+      invoiceId: payment.invoiceId,
+      invoiceNumber: payment.invoiceNumber,
+      customerName: payment.customerName,
+      groupId: payment.groupId,
+      group,
+      paymentDate: payment.paymentDate,
+      description: payment.description,
+      amount,
+      allocatedAmount,
+      availableAmount: Math.max(0, amount - allocatedAmount),
+    };
+  }).filter((payment) => !search || `${payment.invoiceNumber} ${payment.customerName} ${payment.description} ${payment.group?.name ?? "belum terpetakan"}`.toLowerCase().includes(search));
+  res.json({ sources });
+}));
+
+router.get("/operational-finance/expenses/:id", guard(async (req, res) => {
+  const id = positiveId(req.params.id);
+  const record = id ? await operationalExpenseRecord(id) : null;
+  if (!record) {
+    res.status(404).json({ message: "Tagihan operasional tidak ditemukan." });
+    return;
+  }
+  res.json({ expense: record });
+}));
+
+router.post("/operational-finance/expenses", guard(async (req, res, userId) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const groupId = body.groupId == null || body.groupId === "" ? null : positiveId(body.groupId);
+  if (body.groupId != null && body.groupId !== "" && groupId == null) {
+    res.status(400).json({ message: "Grup keberangkatan tidak valid." });
+    return;
+  }
+  if (groupId != null) {
+    const group = await requiredGroup(groupId, res);
+    if (!group || res.headersSent) return;
+  }
+  const totalAmount = positiveMoney(body.totalAmount);
+  const category = text(body.category, "Lainnya");
+  const name = text(body.name);
+  const vendor = text(body.vendor);
+  const billDate = body.billDate == null || body.billDate === "" ? todayIso() : body.billDate;
+  const dueDate = body.dueDate == null || body.dueDate === "" ? null : body.dueDate;
+  if (!totalAmount) {
+    res.status(400).json({ message: "Nominal tagihan harus berupa bilangan rupiah positif yang valid." });
+    return;
+  }
+  if (!category || category.length > 80 || !name || name.length > 200 || !vendor || vendor.length > 200) {
+    res.status(400).json({ message: "Kategori, nama kebutuhan, dan vendor wajib diisi dengan panjang yang valid." });
+    return;
+  }
+  if (!validIsoDate(billDate) || (dueDate != null && !validIsoDate(dueDate))) {
+    res.status(400).json({ message: "Tanggal tagihan atau jatuh tempo tidak valid." });
+    return;
+  }
+  const expense = await db.transaction(async (tx) => {
+    await lockOperationalFinance(tx);
+    const inserted = (await tx.insert(operationalExpenses).values({
+      number: "PENDING",
+      groupId,
+      category,
+      name,
+      vendor,
+      billNumber: optionalText(body.billNumber),
+      totalAmount: String(totalAmount),
+      billDate,
+      dueDate,
+      notes: optionalText(body.notes),
+      createdBy: userId,
+      updatedAt: new Date(),
+    }).returning())[0];
+    const number = `OPR-${String(inserted.id).padStart(8, "0")}`;
+    return (await tx.update(operationalExpenses).set({ number }).where(eq(operationalExpenses.id, inserted.id)).returning())[0];
+  });
+  await audit(userId, "create", "operational_expense", expense.id, { groupId });
+  res.status(201).json({ expense: await operationalExpenseRecord(expense.id) });
+}));
+
+router.put("/operational-finance/expenses/:id", guard(async (req, res, userId) => {
+  const id = positiveId(req.params.id);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const groupWasProvided = Object.hasOwn(body, "groupId");
+  const requestedGroupId = groupWasProvided
+    ? (body.groupId == null || body.groupId === "" ? null : positiveId(body.groupId))
+    : undefined;
+  if (groupWasProvided && body.groupId != null && body.groupId !== "" && requestedGroupId == null) {
+    res.status(400).json({ message: "Grup keberangkatan tidak valid." });
+    return;
+  }
+  if (!id) {
+    res.status(404).json({ message: "Tagihan operasional tidak ditemukan." });
+    return;
+  }
+  if (requestedGroupId != null) {
+    const group = await requiredGroup(requestedGroupId, res);
+    if (!group || res.headersSent) return;
+  }
+  const result = await db.transaction(async (tx) => {
+    await lockOperationalFinance(tx);
+    await tx.execute(sql`SELECT id FROM operational_expenses WHERE id = ${id} FOR UPDATE`);
+    const current = (await tx.select().from(operationalExpenses).where(eq(operationalExpenses.id, id)).limit(1))[0];
+    if (!current) return { error: "Tagihan operasional tidak ditemukan.", status: 404 as const };
+    const groupId = requestedGroupId === undefined ? current.groupId : requestedGroupId;
+    const amount = body.totalAmount === undefined ? moneyValue(current.totalAmount) : positiveMoney(body.totalAmount);
+    if (!amount) return { error: "Nominal tagihan harus berupa bilangan rupiah positif yang valid.", status: 400 as const };
+    const category = text(body.category, current.category);
+    const name = text(body.name, current.name);
+    const vendor = text(body.vendor, current.vendor);
+    const billDate = body.billDate === undefined ? current.billDate : body.billDate;
+    const dueDate = body.dueDate === undefined ? current.dueDate : body.dueDate == null || body.dueDate === "" ? null : body.dueDate;
+    if (!category || category.length > 80 || !name || name.length > 200 || !vendor || vendor.length > 200) {
+      return { error: "Kategori, nama kebutuhan, dan vendor wajib diisi dengan panjang yang valid.", status: 400 as const };
+    }
+    if (!validIsoDate(billDate) || (dueDate != null && !validIsoDate(dueDate))) {
+      return { error: "Tanggal tagihan atau jatuh tempo tidak valid.", status: 400 as const };
+    }
+    const activeAllocation = (await tx.select({ id: operationalExpenseAllocations.id }).from(operationalExpenseAllocations)
+      .where(and(eq(operationalExpenseAllocations.expenseId, id), eq(operationalExpenseAllocations.isActive, true))).limit(1))[0];
+    const postedVendorPayment = (await tx.select({ id: operationalVendorPayments.id }).from(operationalVendorPayments)
+      .where(and(eq(operationalVendorPayments.expenseId, id), eq(operationalVendorPayments.status, "posted"))).limit(1))[0];
+    if (groupId !== current.groupId && (activeAllocation || postedVendorPayment)) {
+      return { error: "Keberangkatan tidak dapat diubah setelah tagihan memiliki alokasi atau pembayaran vendor aktif.", status: 409 as const };
+    }
+    const paid = (await tx.select({ amount: operationalVendorPayments.amount }).from(operationalVendorPayments)
+      .where(and(eq(operationalVendorPayments.expenseId, id), eq(operationalVendorPayments.status, "posted"))))
+      .reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+    if (amount < paid) return { error: "Nominal tagihan tidak boleh lebih kecil daripada pembayaran vendor yang sudah tercatat.", status: 409 as const };
+    const updated = (await tx.update(operationalExpenses).set({
+      groupId,
+      category,
+      name,
+      vendor,
+      billNumber: body.billNumber === undefined ? current.billNumber : optionalText(body.billNumber),
+      totalAmount: String(amount),
+      billDate,
+      dueDate,
+      notes: body.notes === undefined ? current.notes : optionalText(body.notes),
+      updatedAt: new Date(),
+    }).where(eq(operationalExpenses.id, id)).returning())[0];
+    if (!updated) return { error: "Tagihan operasional tidak ditemukan.", status: 404 as const };
+    return { updated, before: current };
+  });
+  if (sendOperationalError(res, result)) return;
+  if (!result.updated || !result.before) throw new Error("Tagihan operasional berhasil diproses tanpa hasil perubahan.");
+  await audit(userId, "update", "operational_expense", id, {
+    before: { groupId: result.before.groupId, totalAmount: result.before.totalAmount, vendor: result.before.vendor },
+    after: { groupId: result.updated.groupId, totalAmount: result.updated.totalAmount, vendor: result.updated.vendor },
+  });
+  res.json({ expense: await operationalExpenseRecord(id) });
+}));
+
+router.post("/operational-finance/allocations", guard(async (req, res, userId) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const paymentId = positiveId(body.paymentId);
+  const expenseId = positiveId(body.expenseId);
+  const amount = positiveMoney(body.amount);
+  const allocationDate = body.allocationDate == null || body.allocationDate === "" ? todayIso() : body.allocationDate;
+  if (!paymentId || !expenseId) {
+    res.status(400).json({ message: "Sumber pembayaran atau tagihan tidak valid." });
+    return;
+  }
+  if (!amount) {
+    res.status(400).json({ message: "Nominal alokasi harus berupa bilangan rupiah positif yang valid." });
+    return;
+  }
+  if (!validIsoDate(allocationDate)) {
+    res.status(400).json({ message: "Tanggal alokasi tidak valid." });
+    return;
+  }
+  const result = await db.transaction(async (tx) => {
+    await lockOperationalFinance(tx);
+    await tx.execute(sql`SELECT id FROM payments WHERE id = ${paymentId} FOR UPDATE`);
+    await tx.execute(sql`SELECT id FROM operational_expenses WHERE id = ${expenseId} FOR UPDATE`);
+    const source = (await tx.select({
+      id: payments.id,
+      amount: payments.amount,
+      groupId: invoices.groupId,
+      invoiceStatus: invoices.status,
+    }).from(payments).innerJoin(invoices, eq(invoices.id, payments.invoiceId)).where(eq(payments.id, paymentId)).limit(1))[0];
+    const expense = (await tx.select().from(operationalExpenses).where(eq(operationalExpenses.id, expenseId)).limit(1))[0];
+    if (!source || !expense) return { error: "Sumber pembayaran atau tagihan tidak ditemukan.", status: 404 as const };
+    if (source.invoiceStatus === "draft" || source.invoiceStatus === "cancelled") {
+      return { error: "Pembayaran dari invoice draft atau dibatalkan tidak dapat digunakan.", status: 409 as const };
+    }
+    if (source.groupId !== expense.groupId) {
+      return { error: "Dana hanya dapat dialokasikan ke tagihan dengan keberangkatan yang sama. Dana belum terpetakan hanya dapat digunakan untuk tagihan umum.", status: 409 as const };
+    }
+    const existing = await tx.select({ amount: operationalExpenseAllocations.amount }).from(operationalExpenseAllocations)
+      .where(and(eq(operationalExpenseAllocations.paymentId, paymentId), eq(operationalExpenseAllocations.isActive, true)));
+    const usedAmount = existing.reduce((sum, entry) => sum + moneyValue(entry.amount), 0);
+    const available = Math.max(0, moneyValue(source.amount) - usedAmount);
+    if (amount > available) return { error: `Alokasi melebihi dana yang tersedia. Sisa: ${available}.`, status: 409 as const };
+    const allocation = (await tx.insert(operationalExpenseAllocations).values({
+      paymentId,
+      expenseId,
+      amount: String(amount),
+      allocationDate,
+      notes: optionalText(body.notes),
+      isActive: true,
+      createdBy: userId,
+      reversalOf: null,
+    }).returning())[0];
+    if (!allocation) throw new Error("Penyimpanan alokasi tidak menghasilkan catatan.");
+    return { allocation };
+  });
+  if (sendOperationalError(res, result)) return;
+  if (!result.allocation) throw new Error("Transaksi alokasi berhasil tanpa catatan alokasi.");
+  await audit(userId, "create", "operational_expense_allocation", result.allocation.id, { paymentId, expenseId, amount });
+  res.status(201).json({ allocation: result.allocation, expense: await operationalExpenseRecord(expenseId) });
+}));
+
+router.delete("/operational-finance/allocations/:id", guard(async (req, res, userId) => {
+  const id = positiveId(req.params.id);
+  if (!id) {
+    res.status(404).json({ message: "Alokasi tidak ditemukan." });
+    return;
+  }
+  const result = await db.transaction(async (tx) => {
+    await lockOperationalFinance(tx);
+    await tx.execute(sql`SELECT id FROM operational_expense_allocations WHERE id = ${id} FOR UPDATE`);
+    const existing = (await tx.select().from(operationalExpenseAllocations).where(eq(operationalExpenseAllocations.id, id)).limit(1))[0];
+    if (!existing) return { error: "Alokasi tidak ditemukan.", status: 404 as const };
+    if (!existing.isActive) return { error: "Alokasi sudah dibatalkan.", status: 409 as const };
+    const used = (await tx.select({ amount: operationalVendorPayments.amount }).from(operationalVendorPayments)
+      .where(and(eq(operationalVendorPayments.allocationId, id), eq(operationalVendorPayments.status, "posted"))))
+      .reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+    if (used > 0) return { error: "Pembayaran vendor yang menggunakan alokasi harus direversal terlebih dahulu.", status: 409 as const };
+    await tx.update(operationalExpenseAllocations).set({ isActive: false }).where(eq(operationalExpenseAllocations.id, id));
+    const reversal = (await tx.insert(operationalExpenseAllocations).values({
+      paymentId: existing.paymentId,
+      expenseId: existing.expenseId,
+      amount: existing.amount,
+      allocationDate: todayIso(),
+      notes: `Reversal alokasi #${id}`,
+      isActive: false,
+      createdBy: userId,
+      reversalOf: id,
+    }).returning())[0];
+    if (!reversal) throw new Error("Penyimpanan reversal alokasi tidak menghasilkan catatan.");
+    return { existing, reversal };
+  });
+  if (sendOperationalError(res, result)) return;
+  if (!result.existing || !result.reversal) throw new Error("Pembatalan alokasi berhasil tanpa catatan reversal.");
+  await audit(userId, "cancel", "operational_expense_allocation", id, {
+    reversalId: result.reversal.id,
+    paymentId: result.existing.paymentId,
+    expenseId: result.existing.expenseId,
+  });
+  res.json({ allocation: result.existing, reversal: result.reversal, expense: await operationalExpenseRecord(result.existing.expenseId) });
+}));
+
+router.post("/operational-finance/vendor-payments", guard(async (req, res, userId) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const expenseId = positiveId(body.expenseId);
+  const allocationId = positiveId(body.allocationId);
+  const amount = positiveMoney(body.amount);
+  const paymentDate = body.paymentDate == null || body.paymentDate === "" ? todayIso() : body.paymentDate;
+  if (!expenseId || !allocationId) {
+    res.status(400).json({ message: "Pembayaran vendor wajib menggunakan alokasi dana yang valid." });
+    return;
+  }
+  if (!amount) {
+    res.status(400).json({ message: "Nominal pembayaran vendor harus berupa bilangan rupiah positif yang valid." });
+    return;
+  }
+  if (!validIsoDate(paymentDate)) {
+    res.status(400).json({ message: "Tanggal pembayaran vendor tidak valid." });
+    return;
+  }
+  const result = await db.transaction(async (tx) => {
+    await lockOperationalFinance(tx);
+    await tx.execute(sql`SELECT id FROM operational_expenses WHERE id = ${expenseId} FOR UPDATE`);
+    await tx.execute(sql`SELECT id FROM operational_expense_allocations WHERE id = ${allocationId} FOR UPDATE`);
+    const expense = (await tx.select().from(operationalExpenses).where(eq(operationalExpenses.id, expenseId)).limit(1))[0];
+    const allocation = (await tx.select().from(operationalExpenseAllocations).where(eq(operationalExpenseAllocations.id, allocationId)).limit(1))[0];
+    if (!expense || !allocation) return { error: "Tagihan atau alokasi tidak ditemukan.", status: 404 as const };
+    if (allocation.expenseId !== expenseId || !allocation.isActive) {
+      return { error: "Alokasi dana tidak aktif atau bukan untuk tagihan ini.", status: 409 as const };
+    }
+    const source = (await tx.select({ groupId: invoices.groupId, invoiceStatus: invoices.status }).from(payments)
+      .innerJoin(invoices, eq(invoices.id, payments.invoiceId)).where(eq(payments.id, allocation.paymentId)).limit(1))[0];
+    if (!source || source.invoiceStatus === "draft" || source.invoiceStatus === "cancelled" || source.groupId !== expense.groupId) {
+      return { error: "Sumber pembayaran alokasi tidak lagi valid untuk tagihan ini.", status: 409 as const };
+    }
+    const paid = (await tx.select({ amount: operationalVendorPayments.amount }).from(operationalVendorPayments)
+      .where(and(eq(operationalVendorPayments.expenseId, expenseId), eq(operationalVendorPayments.status, "posted"))))
+      .reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+    const remaining = Math.max(0, moneyValue(expense.totalAmount) - paid);
+    if (amount > remaining) return { error: `Pembayaran vendor melebihi sisa tagihan. Maksimal: ${remaining}.`, status: 409 as const };
+    const used = (await tx.select({ amount: operationalVendorPayments.amount }).from(operationalVendorPayments)
+      .where(and(eq(operationalVendorPayments.allocationId, allocationId), eq(operationalVendorPayments.status, "posted"))))
+      .reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
+    const available = Math.max(0, moneyValue(allocation.amount) - used);
+    if (amount > available) return { error: `Pembayaran vendor melebihi dana alokasi yang tersedia. Maksimal: ${available}.`, status: 409 as const };
+    const payment = (await tx.insert(operationalVendorPayments).values({
+      expenseId,
+      allocationId,
+      paymentDate,
+      amount: String(amount),
+      method: text(body.method, "Transfer"),
+      reference: optionalText(body.reference),
+      notes: optionalText(body.notes),
+      status: "posted",
+      createdBy: userId,
+      reversalOf: null,
+    }).returning())[0];
+    if (!payment) throw new Error("Penyimpanan pembayaran vendor tidak menghasilkan catatan.");
+    return { payment };
+  });
+  if (sendOperationalError(res, result)) return;
+  if (!result.payment) throw new Error("Transaksi pembayaran vendor berhasil tanpa catatan pembayaran.");
+  await audit(userId, "create", "operational_vendor_payment", result.payment.id, { expenseId, allocationId, amount });
+  res.status(201).json({ payment: result.payment, expense: await operationalExpenseRecord(expenseId) });
+}));
+
+router.delete("/operational-finance/vendor-payments/:id", guard(async (req, res, userId) => {
+  const id = positiveId(req.params.id);
+  if (!id) {
+    res.status(404).json({ message: "Pembayaran vendor tidak ditemukan." });
+    return;
+  }
+  const result = await db.transaction(async (tx) => {
+    await lockOperationalFinance(tx);
+    await tx.execute(sql`SELECT id FROM operational_vendor_payments WHERE id = ${id} FOR UPDATE`);
+    const existing = (await tx.select().from(operationalVendorPayments).where(eq(operationalVendorPayments.id, id)).limit(1))[0];
+    if (!existing) return { error: "Pembayaran vendor tidak ditemukan.", status: 404 as const };
+    if (existing.status !== "posted" || existing.reversalOf != null) {
+      return { error: "Pembayaran vendor sudah direversal atau tidak aktif.", status: 409 as const };
+    }
+    await tx.update(operationalVendorPayments).set({ status: "reversed" }).where(eq(operationalVendorPayments.id, id));
+    const reversal = (await tx.insert(operationalVendorPayments).values({
+      expenseId: existing.expenseId,
+      allocationId: existing.allocationId,
+      paymentDate: todayIso(),
+      amount: existing.amount,
+      method: existing.method,
+      reference: existing.reference,
+      notes: `Reversal pembayaran vendor #${existing.id}`,
+      status: "reversal",
+      createdBy: userId,
+      reversalOf: existing.id,
+    }).returning())[0];
+    if (!reversal) throw new Error("Penyimpanan reversal pembayaran vendor tidak menghasilkan catatan.");
+    return { existing, reversal };
+  });
+  if (sendOperationalError(res, result)) return;
+  if (!result.existing || !result.reversal) throw new Error("Reversal pembayaran vendor berhasil tanpa catatan reversal.");
+  await audit(userId, "reverse", "operational_vendor_payment", id, {
+    reversalId: result.reversal.id,
+    expenseId: result.existing.expenseId,
+    allocationId: result.existing.allocationId,
+  });
+  res.json({ payment: result.existing, reversal: result.reversal, expense: await operationalExpenseRecord(result.existing.expenseId) });
 }));
 
 export async function initializeAppData(): Promise<void> {

@@ -26,9 +26,9 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { ApiError, api, formatDate, formatMoneyInput, money, normalizeMoneyInputValue, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
+import { ApiError, api, formatDate, formatMoneyInput, money, normalizeMoneyInputValue, parseMoneyInput, today, type Bank, type Dashboard, type DepartureGroup, type DepartureGroupDetail, type Invoice, type Item, type OperationalExpense, type OperationalFinanceSummary, type OperationalFundSource, type Payment, type Receipt, type Settings as CompanySettings, type User } from "./api";
 
-type View = "dashboard" | "groups" | "invoices" | "payments" | "receipts" | "settings";
+type View = "dashboard" | "groups" | "invoices" | "payments" | "receipts" | "financials" | "settings";
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
@@ -80,6 +80,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof Home }> = [
   { id: "invoices", label: "Invoice", icon: FileText },
   { id: "payments", label: "Pembayaran", icon: WalletCards },
   { id: "receipts", label: "Kuitansi", icon: ReceiptText },
+  { id: "financials", label: "Keuangan Operasional", icon: BarChart3 },
   { id: "settings", label: "Pengaturan", icon: Settings },
 ];
 
@@ -284,6 +285,7 @@ function App() {
         {view === "invoices" && <InvoicesPage onNotice={setNotice} onError={setError} onNavigate={navigate} />}
         {view === "payments" && <PaymentsPage onNotice={setNotice} onError={setError} />}
         {view === "receipts" && <ReceiptsPage onError={setError} />}
+        {view === "financials" && <OperationalFinancePage onError={setError} />}
         {view === "settings" && <SettingsPage onNotice={setNotice} onError={setError} />}
       </div>
     </main>
@@ -292,6 +294,176 @@ function App() {
 
 function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) {
   return <div className="page-intro"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2><p>{description}</p></div>{action}</div>;
+}
+
+function OperationalFinancePage({ onError }: { onError: (message: string) => void }) {
+  const [data, setData] = useState<OperationalFinanceSummary | null>(null);
+  const [expenses, setExpenses] = useState<OperationalExpense[]>([]);
+  const [sources, setSources] = useState<OperationalFundSource[]>([]);
+  const [groups, setGroups] = useState<DepartureGroup[]>([]);
+  const [search, setSearch] = useState("");
+  const [groupFilter, setGroupFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("Semua");
+  const [draft, setDraft] = useState<OperationalExpense | null | undefined>(undefined);
+  const [detail, setDetail] = useState<OperationalExpense | null>(null);
+  const [allocationFor, setAllocationFor] = useState<OperationalExpense | null>(null);
+  const [vendorPaymentFor, setVendorPaymentFor] = useState<OperationalExpense | null>(null);
+  const [allocationDraft, setAllocationDraft] = useState({ paymentId: "", amount: "", allocationDate: today(), notes: "" });
+  const [vendorPaymentDraft, setVendorPaymentDraft] = useState({ allocationId: "", amount: "", paymentDate: today(), method: "Transfer", reference: "", notes: "" });
+  const [expenseDraft, setExpenseDraft] = useState({ groupId: "", category: "Hotel Makkah", name: "", vendor: "", billNumber: "", totalAmount: "", billDate: today(), dueDate: "", notes: "" });
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  async function load() {
+    try {
+      const [summary, expenseResult, sourceResult, groupResult] = await Promise.all([
+        api<OperationalFinanceSummary>("/api/operational-finance/dashboard"),
+        api<{ expenses: OperationalExpense[] }>("/api/operational-finance/expenses"),
+        api<{ sources: OperationalFundSource[] }>("/api/operational-finance/fund-sources"),
+        api<{ groups: DepartureGroup[] }>("/api/groups"),
+      ]);
+      setData(summary);
+      setExpenses(expenseResult.expenses);
+      setSources(sourceResult.sources);
+      setGroups(groupResult.groups);
+      setLoaded(true);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal memuat keuangan operasional.");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [onError]);
+
+  async function openDetail(expenseId: number) {
+    try {
+      const result = await api<{ expense: OperationalExpense }>(`/api/operational-finance/expenses/${expenseId}`);
+      setDetail(result.expense);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal membuka detail tagihan.");
+    }
+  }
+
+  async function saveExpense(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const payload = { ...expenseDraft, totalAmount: parseMoneyInput(expenseDraft.totalAmount), groupId: expenseDraft.groupId || null, dueDate: expenseDraft.dueDate || null };
+      const editing = draft;
+      const path = editing ? `/api/operational-finance/expenses/${editing.id}` : "/api/operational-finance/expenses";
+      await api(path, { method: editing ? "PUT" : "POST", body: JSON.stringify(payload) });
+      setDraft(undefined);
+      onError("");
+      await load();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal menyimpan tagihan.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAllocation(event: React.FormEvent) {
+    event.preventDefault();
+    if (!allocationFor) return;
+    setBusy(true);
+    try {
+      await api("/api/operational-finance/allocations", { method: "POST", body: JSON.stringify({ ...allocationDraft, paymentId: Number(allocationDraft.paymentId), expenseId: allocationFor.id, amount: parseMoneyInput(allocationDraft.amount) }) });
+      setAllocationFor(null);
+      await load();
+      await openDetail(allocationFor.id);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal mengalokasikan dana.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveVendorPayment(event: React.FormEvent) {
+    event.preventDefault();
+    if (!vendorPaymentFor) return;
+    setBusy(true);
+    try {
+      await api("/api/operational-finance/vendor-payments", { method: "POST", body: JSON.stringify({ ...vendorPaymentDraft, allocationId: Number(vendorPaymentDraft.allocationId), expenseId: vendorPaymentFor.id, amount: parseMoneyInput(vendorPaymentDraft.amount) }) });
+      setVendorPaymentFor(null);
+      await load();
+      await openDetail(vendorPaymentFor.id);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal mencatat pembayaran vendor.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reverseAllocation(allocationId: number) {
+    if (!window.confirm("Batalkan alokasi ini? Histori reversal tetap disimpan.")) return;
+    try {
+      await api(`/api/operational-finance/allocations/${allocationId}`, { method: "DELETE" });
+      if (detail) await openDetail(detail.id);
+      await load();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal membatalkan alokasi.");
+    }
+  }
+
+  async function reverseVendorPayment(paymentId: number) {
+    if (!window.confirm("Reversal pembayaran vendor ini? Catatan reversal akan disimpan.")) return;
+    try {
+      await api(`/api/operational-finance/vendor-payments/${paymentId}`, { method: "DELETE" });
+      if (detail) await openDetail(detail.id);
+      await load();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal melakukan reversal pembayaran vendor.");
+    }
+  }
+
+  const visibleExpenses = expenses.filter((expense) => {
+    const matchesSearch = !search || `${expense.number} ${expense.name} ${expense.vendor} ${expense.group?.name ?? "umum"}`.toLowerCase().includes(search.toLowerCase());
+    const matchesGroup = groupFilter === "all" || (groupFilter === "general" ? expense.groupId == null : String(expense.groupId) === groupFilter);
+    const matchesStatus = statusFilter === "Semua" || expense.status === statusFilter;
+    return matchesSearch && matchesGroup && matchesStatus;
+  });
+  const selectedSource = sources.find((source) => String(source.id) === allocationDraft.paymentId);
+  const allocationAmount = parseMoneyInput(allocationDraft.amount);
+  const selectedAllocation = allocationFor && sources.find((source) => String(source.id) === allocationDraft.paymentId);
+  const projectedShortfall = allocationFor ? Math.max(0, allocationFor.remainingBalance - allocationFor.availableAllocation - allocationAmount) : 0;
+
+  return <>
+    <PageIntro eyebrow="KEUANGAN OPERASIONAL" title="Keuangan Operasional" description="Pantau pembayaran jamaah tercatat, dana alokasi, tagihan, dan pembayaran vendor." action={<button className="button primary" onClick={() => { setExpenseDraft({ groupId: "", category: "Hotel Makkah", name: "", vendor: "", billNumber: "", totalAmount: "", billDate: today(), dueDate: "", notes: "" }); setDraft(null); }}><Plus size={18} />Tambah tagihan</button>} />
+    {!loaded && <LoadingBlock />}
+    {data && <>
+    <div className="stats-grid">
+      <FinanceMetric label="Pembayaran jamaah tercatat" value={data.totalCustomerPayments} icon={<WalletCards />} tone="navy" />
+      <FinanceMetric label="Dana belum dialokasikan" value={data.totalUnallocatedFunds} icon={<Banknote />} tone="amber" />
+      <FinanceMetric label="Tagihan operasional" value={data.totalOperationalCosts} icon={<FileText />} tone="orange" />
+      <FinanceMetric label="Sisa tagihan vendor" value={data.totalVendorRemaining} icon={<CircleAlert />} tone="green" />
+    </div>
+    <section className="panel"><div className="panel-heading"><div><p className="eyebrow">RINGKASAN</p><h3>Saldo operasional</h3></div><BarChart3 size={21} /></div>
+      <div className="financial-lines">
+        <div><span>Total dana teralokasi tersedia</span><strong className="green-text">{money(data.totalAllocatedAvailable)}</strong></div>
+        <div><span>Total pembayaran vendor</span><strong>{money(data.totalVendorPayments)}</strong></div>
+        <div><span>Total kekurangan dana</span><strong className="orange-text">{money(data.totalShortfall)}</strong></div>
+        <div><span>Tagihan mendekati jatuh tempo (7 hari)</span><strong>{data.dueSoonCount}</strong></div>
+        <div><span>Tagihan terlambat</span><strong className="orange-text">{data.overdueCount}</strong></div>
+      </div>
+    </section>
+    <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">TAGIHAN</p><h3>Daftar tagihan</h3></div></div>
+      <div className="toolbar"><div className="search-box"><Search size={18} /><input aria-label="Cari tagihan" placeholder="Cari nomor, nama tagihan, vendor..." value={search} onChange={(event) => setSearch(event.target.value)} /></div><select value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}><option value="all">Semua keberangkatan</option><option value="general">Tagihan umum</option>{groups.map((group) => <option key={group.id} value={String(group.id)}>{group.code} · {group.name}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>Semua</option><option>BELUM DIBAYAR</option><option>DIBAYAR SEBAGIAN</option><option>LUNAS</option></select></div>
+      {visibleExpenses.length === 0 ? <p className="empty-state">{expenses.length ? "Tidak ada tagihan yang sesuai filter." : "Belum ada tagihan operasional."}</p> : <div className="table-wrap"><table><thead><tr><th>Nomor / kebutuhan</th><th>Keberangkatan</th><th>Vendor</th><th>Tagihan / sisa</th><th>Status</th><th>Jatuh tempo</th><th>Aksi</th></tr></thead><tbody>{visibleExpenses.map((expense) => <tr key={expense.id}><td><button className="text-button" onClick={() => void openDetail(expense.id)}><strong>{expense.number}</strong></button><small>{expense.name}</small></td><td>{expense.group ? `${expense.group.code} · ${expense.group.name}` : "Umum / belum terpetakan"}</td><td>{expense.vendor}</td><td>{money(expense.totalAmount)}<small>Sisa {money(expense.remainingBalance)}</small></td><td><span className={`status ${statusClass(expense.status)}`}>{expense.status}</span></td><td>{expense.dueDate ? formatDate(expense.dueDate) : "-"}</td><td><div className="row-actions"><button className="icon-button" title="Edit tagihan" onClick={() => { setDraft(expense); setExpenseDraft({ groupId: expense.groupId ? String(expense.groupId) : "", category: expense.category, name: expense.name, vendor: expense.vendor, billNumber: expense.billNumber ?? "", totalAmount: String(expense.totalAmount), billDate: expense.billDate, dueDate: expense.dueDate ?? "", notes: expense.notes ?? "" }); }}><Pencil size={16} /></button><button className="icon-button" title="Alokasikan dana" onClick={() => { setAllocationFor(expense); setAllocationDraft({ paymentId: "", amount: "", allocationDate: today(), notes: "" }); }}><WalletCards size={16} /></button><button className="icon-button" title="Bayar vendor" onClick={() => { setVendorPaymentFor(expense); setVendorPaymentDraft({ allocationId: "", amount: "", paymentDate: today(), method: "Transfer", reference: "", notes: "" }); }}><Banknote size={16} /></button></div></td></tr>)}</tbody></table></div>}
+    </section>
+    <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">SUMBER DANA</p><h3>Pembayaran jamaah yang tercatat</h3><p className="muted">Invoice yang belum dibayar tidak ditampilkan sebagai sumber dana.</p></div></div>
+      {sources.length === 0 ? <p className="empty-state">Belum ada pembayaran jamaah yang dapat digunakan.</p> : <div className="table-wrap"><table><thead><tr><th>Pembayaran / invoice</th><th>Jamaah</th><th>Keberangkatan</th><th>Tanggal</th><th>Nominal tercatat</th><th>Dialokasikan</th><th>Tersedia</th></tr></thead><tbody>{sources.map((source) => <tr key={source.id}><td>{source.invoiceNumber}<small>{source.description}</small></td><td>{source.customerName}</td><td>{source.group ? `${source.group.code} · ${source.group.name}` : "Belum terpetakan"}</td><td>{formatDate(source.paymentDate)}</td><td>{money(source.amount)}</td><td>{money(source.allocatedAmount)}</td><td>{money(source.availableAmount)}</td></tr>)}</tbody></table></div>}
+    </section>
+    </>}
+    {draft !== undefined && <Modal title={draft ? "Edit Tagihan Operasional" : "Tambah Tagihan Operasional"} onClose={() => setDraft(undefined)}><form className="form-content" onSubmit={saveExpense}><div className="form-grid two"><label>Keberangkatan<select value={expenseDraft.groupId} onChange={(event) => setExpenseDraft({ ...expenseDraft, groupId: event.target.value })}><option value="">Umum / belum terpetakan</option>{groups.map((group) => <option key={group.id} value={String(group.id)}>{group.code} · {group.name}</option>)}</select></label><label>Kategori<select value={expenseDraft.category} onChange={(event) => setExpenseDraft({ ...expenseDraft, category: event.target.value })}>{["Hotel Makkah", "Hotel Madinah", "Visa", "Tiket pesawat", "Transportasi", "Konsumsi", "Handling", "Perlengkapan", "Lainnya"].map((category) => <option key={category}>{category}</option>)}</select></label><label>Nama kebutuhan<input required value={expenseDraft.name} onChange={(event) => setExpenseDraft({ ...expenseDraft, name: event.target.value })} /></label><label>Vendor<input required value={expenseDraft.vendor} onChange={(event) => setExpenseDraft({ ...expenseDraft, vendor: event.target.value })} /></label><label>Nomor tagihan vendor<input value={expenseDraft.billNumber} onChange={(event) => setExpenseDraft({ ...expenseDraft, billNumber: event.target.value })} /></label><label>Total tagihan<MoneyInput required value={expenseDraft.totalAmount} onChange={(value) => setExpenseDraft({ ...expenseDraft, totalAmount: value })} /></label><label>Tanggal tagihan<input required type="date" value={expenseDraft.billDate} onChange={(event) => setExpenseDraft({ ...expenseDraft, billDate: event.target.value })} /></label><label>Jatuh tempo<input type="date" value={expenseDraft.dueDate} onChange={(event) => setExpenseDraft({ ...expenseDraft, dueDate: event.target.value })} /></label><label className="span-two">Catatan<textarea rows={3} value={expenseDraft.notes} onChange={(event) => setExpenseDraft({ ...expenseDraft, notes: event.target.value })} /></label></div><div className="modal-actions"><button type="button" className="button ghost" onClick={() => setDraft(undefined)}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan tagihan"}</button></div></form></Modal>}
+    {allocationFor && <Modal title={`Alokasi dana · ${allocationFor.number}`} onClose={() => setAllocationFor(null)}><form className="form-content" onSubmit={saveAllocation}><label>Sumber pembayaran<select required value={allocationDraft.paymentId} onChange={(event) => setAllocationDraft({ ...allocationDraft, paymentId: event.target.value })}><option value="">Pilih sumber dengan keberangkatan sesuai</option>{sources.filter((source) => source.groupId === allocationFor.groupId && source.availableAmount > 0).map((source) => <option key={source.id} value={String(source.id)}>{source.invoiceNumber} · {source.customerName} · tersedia {money(source.availableAmount)}</option>)}</select></label>{selectedSource && <p className="muted">Tersedia sebelum alokasi: <strong>{money(selectedSource.availableAmount)}</strong></p>}<label>Nominal alokasi<MoneyInput required value={allocationDraft.amount} onChange={(value) => setAllocationDraft({ ...allocationDraft, amount: value })} /></label><label>Tanggal alokasi<input required type="date" value={allocationDraft.allocationDate} onChange={(event) => setAllocationDraft({ ...allocationDraft, allocationDate: event.target.value })} /></label><label>Catatan<input value={allocationDraft.notes} onChange={(event) => setAllocationDraft({ ...allocationDraft, notes: event.target.value })} /></label>{selectedSource && <div className="alert"><div>Sisa sumber setelah alokasi: <strong>{money(Math.max(0, selectedSource.availableAmount - allocationAmount))}</strong><br />Sisa tagihan setelah alokasi: <strong>{money(allocationFor.remainingBalance)}</strong><br />Kekurangan setelah alokasi: <strong>{money(projectedShortfall)}</strong></div></div>}<div className="modal-actions"><button type="button" className="button ghost" onClick={() => setAllocationFor(null)}>Batal</button><button className="button primary" disabled={busy || !selectedAllocation}>{busy ? "Menyimpan..." : "Simpan alokasi"}</button></div></form></Modal>}
+    {vendorPaymentFor && <Modal title={`Pembayaran vendor · ${vendorPaymentFor.number}`} onClose={() => setVendorPaymentFor(null)}><form className="form-content" onSubmit={saveVendorPayment}><p>Sisa tagihan saat ini: <strong>{money(vendorPaymentFor.remainingBalance)}</strong></p><label>Alokasi sumber dana<select required value={vendorPaymentDraft.allocationId} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, allocationId: event.target.value })}><option value="">Pilih alokasi aktif</option>{vendorPaymentFor.allocations.filter((allocation) => allocation.isActive && allocation.available > 0).map((allocation) => <option key={allocation.id} value={String(allocation.id)}>{allocation.paymentNumber ?? `Pembayaran #${allocation.paymentId}`} · tersedia {money(allocation.available)}</option>)}</select></label><label>Nominal pembayaran<MoneyInput required value={vendorPaymentDraft.amount} onChange={(value) => setVendorPaymentDraft({ ...vendorPaymentDraft, amount: value })} /></label><label>Tanggal pembayaran<input required type="date" value={vendorPaymentDraft.paymentDate} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, paymentDate: event.target.value })} /></label><label>Metode<select value={vendorPaymentDraft.method} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>Kartu</option><option>Lainnya</option></select></label><label>Referensi transaksi<input value={vendorPaymentDraft.reference} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, reference: event.target.value })} /></label><label>Catatan<input value={vendorPaymentDraft.notes} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, notes: event.target.value })} /></label><div className="modal-actions"><button type="button" className="button ghost" onClick={() => setVendorPaymentFor(null)}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Catat pembayaran aktual"}</button></div></form></Modal>}
+    {detail && <Modal title={`${detail.number} · ${detail.name}`} onClose={() => setDetail(null)} wide><div className="detail-body"><div className="detail-top"><div><p className="eyebrow">{detail.group ? `${detail.group.code} · ${detail.group.name}` : "Tagihan umum / belum terpetakan"}</p><h3>{detail.vendor}</h3><p>{detail.category} · jatuh tempo {detail.dueDate ? formatDate(detail.dueDate) : "-"}</p></div><span className={`status ${statusClass(detail.status)}`}>{detail.status}</span></div><div className="detail-metrics"><div><span>Total tagihan</span><strong>{money(detail.totalAmount)}</strong></div><div><span>Pembayaran aktual vendor</span><strong>{money(detail.usedAmount)}</strong></div><div><span>Sisa tagihan</span><strong>{money(detail.remainingBalance)}</strong></div><div><span>Alokasi tersedia</span><strong>{money(detail.availableAllocation)}</strong></div><div><span>Kekurangan dana</span><strong>{money(detail.shortfall)}</strong></div></div><div className="detail-section"><div className="section-heading"><h3>Riwayat alokasi</h3></div>{detail.allocations.map((allocation) => <p key={allocation.id}>{allocation.paymentNumber ?? `Pembayaran #${allocation.paymentId}`} · {money(allocation.amount)} · {allocation.isActive ? `tersedia ${money(allocation.available)}` : "dibatalkan"}{allocation.isActive && <button className="text-button" onClick={() => void reverseAllocation(allocation.id)}>Batalkan</button>}</p>)}</div><div className="detail-section"><div className="section-heading"><h3>Riwayat pembayaran vendor</h3></div>{detail.vendorPayments.map((payment) => <p key={payment.id}>{formatDate(payment.paymentDate)} · {money(payment.amount)} · {payment.method} · {payment.status}{payment.status === "posted" && <button className="text-button" onClick={() => void reverseVendorPayment(payment.id)}>Reversal</button>}</p>)}</div></div></Modal>}
+  </>;
+}
+
+function FinanceMetric({ label, value, icon, tone }: { label: string; value: number; icon: React.ReactNode; tone: string }) {
+  return <div className={`stat-card ${tone}`}><div className="stat-icon">{icon}</div><div><span>{label}</span><strong>{money(value)}</strong></div></div>;
 }
 
 function DashboardPage({ onNavigate, onNotice, onError }: { onNavigate: (view: View) => void; onNotice: (message: string) => void; onError: (message: string) => void }) {
@@ -358,7 +530,14 @@ function GroupForm({ initial, onClose, onSaved, onError }: { initial: GroupDraft
 }
 
 function GroupDetail({ group, onClose }: { group: DepartureGroupDetail; onClose: () => void }) {
-  return <Modal title={group.name} onClose={onClose} wide><div className="detail-body"><div className="detail-top"><div><p className="eyebrow">{group.code}</p><h3>{group.packageName}</h3><p>{formatDate(group.departureDate)}{group.returnDate ? ` sampai ${formatDate(group.returnDate)}` : ""}</p></div><span className={`status ${statusClass(group.status)}`}>{group.status === "active" ? "Aktif" : group.status === "completed" ? "Selesai" : "Dibatalkan"}</span></div><div className="detail-metrics"><div><span>Jumlah invoice</span><strong>{group.invoiceCount}</strong></div><div><span>Total invoice</span><strong>{money(group.invoiceTotal)}</strong></div><div><span>Total payment</span><strong className="green-text">{money(group.paymentTotal)}</strong></div><div><span>Remaining balance</span><strong className="orange-text">{money(group.remainingTotal)}</strong></div></div><div className="detail-section"><div className="section-heading"><h3>Invoice dalam group</h3></div><div className="table-wrap"><table><thead><tr><th>Invoice Number</th><th>Customer</th><th>Total Invoice</th><th>Payment</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{group.invoices.map((invoice) => <tr key={invoice.id}><td>{invoice.number}</td><td>{invoice.customerName}</td><td>{money(invoice.total)}</td><td>{money(invoice.paid)}</td><td>{money(invoice.remaining)}</td><td><span className={`status ${statusClass(invoice.status)}`}>{invoice.status}</span></td></tr>)}</tbody></table></div></div></div></Modal>;
+  const finance = group.financialSummary;
+  return <Modal title={group.name} onClose={onClose} wide><div className="detail-body">
+    <div className="detail-top"><div><p className="eyebrow">{group.code}</p><h3>{group.packageName}</h3><p>{formatDate(group.departureDate)}{group.returnDate ? ` sampai ${formatDate(group.returnDate)}` : ""}</p></div><span className={`status ${statusClass(group.status)}`}>{group.status === "active" ? "Aktif" : group.status === "completed" ? "Selesai" : "Dibatalkan"}</span></div>
+    <div className="detail-metrics"><div><span>Jumlah invoice</span><strong>{group.invoiceCount}</strong></div><div><span>Total invoice</span><strong>{money(group.invoiceTotal)}</strong></div><div><span>Total pembayaran jamaah</span><strong className="green-text">{money(group.paymentTotal)}</strong></div><div><span>Sisa invoice jamaah</span><strong className="orange-text">{money(group.remainingTotal)}</strong></div></div>
+    {finance && <div className="detail-section"><div className="section-heading"><h3>Ringkasan keuangan keberangkatan</h3></div><div className="detail-metrics"><div><span>Total biaya operasional</span><strong>{money(finance.operationalCostTotal)}</strong></div><div><span>Pembayaran aktual vendor</span><strong>{money(finance.vendorPaidTotal)}</strong></div><div><span>Sisa tagihan vendor</span><strong>{money(finance.vendorRemainingTotal)}</strong></div><div><span>Alokasi tersedia</span><strong>{money(finance.availableAllocationTotal)}</strong></div><div><span>Dana belum dialokasikan</span><strong>{money(finance.unallocatedFunds)}</strong></div><div><span>Kekurangan dana</span><strong className="orange-text">{money(finance.shortfallTotal)}</strong></div></div></div>}
+    <div className="detail-section"><div className="section-heading"><h3>Tagihan operasional</h3></div>{group.expenses?.length ? <div className="table-wrap"><table><thead><tr><th>Nomor</th><th>Kebutuhan / vendor</th><th>Total</th><th>Terbayar</th><th>Sisa</th><th>Status</th></tr></thead><tbody>{group.expenses.map((expense) => <tr key={expense.id}><td>{expense.number}</td><td>{expense.name}<small>{expense.vendor}</small></td><td>{money(expense.totalAmount)}</td><td>{money(expense.usedAmount)}</td><td>{money(expense.remainingBalance)}</td><td><span className={`status ${statusClass(expense.status)}`}>{expense.status}</span></td></tr>)}</tbody></table></div> : <p className="muted">Belum ada tagihan operasional untuk keberangkatan ini.</p>}</div>
+    <div className="detail-section"><div className="section-heading"><h3>Invoice dalam group</h3></div><div className="table-wrap"><table><thead><tr><th>Invoice Number</th><th>Customer</th><th>Total Invoice</th><th>Payment</th><th>Remaining</th><th>Status</th></tr></thead><tbody>{group.invoices.map((invoice) => <tr key={invoice.id}><td>{invoice.number}</td><td>{invoice.customerName}</td><td>{money(invoice.total)}</td><td>{money(invoice.paid)}</td><td>{money(invoice.remaining)}</td><td><span className={`status ${statusClass(invoice.status)}`}>{invoice.status}</span></td></tr>)}</tbody></table></div></div>
+  </div></Modal>;
 }
 
 function InvoicesPage({ onNotice, onError, onNavigate }: { onNotice: (message: string) => void; onError: (message: string) => void; onNavigate: (view: View) => void }) {

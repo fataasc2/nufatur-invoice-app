@@ -2,6 +2,8 @@ import {
   boolean,
   date,
   integer,
+  check,
+  index,
   jsonb,
   numeric,
   pgTable,
@@ -10,6 +12,7 @@ import {
   timestamp,
   varchar,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -133,6 +136,65 @@ export const receipts = pgTable("receipts", {
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+export const operationalExpenses = pgTable("operational_expenses", {
+  id: serial("id").primaryKey(),
+  number: varchar("number", { length: 80 }).notNull().unique(),
+  groupId: integer("group_id").references(() => departureGroups.id, { onDelete: "set null" }),
+  category: varchar("category", { length: 80 }).notNull(),
+  name: varchar("name", { length: 200 }).notNull(),
+  vendor: varchar("vendor", { length: 200 }).notNull(),
+  billNumber: varchar("bill_number", { length: 80 }),
+  totalAmount: numeric("total_amount", { precision: 16, scale: 2 }).notNull(),
+  billDate: date("bill_date").notNull(),
+  dueDate: date("due_date"),
+  notes: text("notes"),
+  createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("operational_expenses_group_id_idx").on(table.groupId),
+  index("operational_expenses_due_date_idx").on(table.dueDate),
+  check("operational_expenses_total_amount_check", sql`${table.totalAmount} > 0`),
+]);
+
+export const operationalExpenseAllocations = pgTable("operational_expense_allocations", {
+  id: serial("id").primaryKey(),
+  paymentId: integer("payment_id").notNull().references(() => payments.id, { onDelete: "restrict" }),
+  expenseId: integer("expense_id").notNull().references(() => operationalExpenses.id, { onDelete: "cascade" }),
+  amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),
+  allocationDate: date("allocation_date").notNull(),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+  reversalOf: integer("reversal_of"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("operational_expense_allocations_payment_id_idx").on(table.paymentId),
+  index("operational_expense_allocations_expense_id_idx").on(table.expenseId),
+  index("operational_expense_allocations_reversal_of_idx").on(table.reversalOf),
+  check("operational_expense_allocations_amount_check", sql`${table.amount} > 0`),
+]);
+
+export const operationalVendorPayments = pgTable("operational_vendor_payments", {
+  id: serial("id").primaryKey(),
+  expenseId: integer("expense_id").notNull().references(() => operationalExpenses.id, { onDelete: "cascade" }),
+  allocationId: integer("allocation_id").references(() => operationalExpenseAllocations.id, { onDelete: "restrict" }),
+  paymentDate: date("payment_date").notNull(),
+  amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),
+  method: varchar("method", { length: 40 }).notNull().default("Transfer"),
+  reference: varchar("reference", { length: 200 }),
+  notes: text("notes"),
+  status: varchar("status", { length: 32 }).notNull().default("posted"),
+  createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+  reversalOf: integer("reversal_of"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("operational_vendor_payments_expense_id_idx").on(table.expenseId),
+  index("operational_vendor_payments_allocation_id_idx").on(table.allocationId),
+  index("operational_vendor_payments_reversal_of_idx").on(table.reversalOf),
+  check("operational_vendor_payments_amount_check", sql`${table.amount} > 0`),
+]);
 
 export const invoiceTemplates = pgTable("invoice_templates", {
   id: serial("id").primaryKey(),

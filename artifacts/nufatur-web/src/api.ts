@@ -37,6 +37,16 @@ export type DepartureGroupDetail = DepartureGroup & {
   paymentTotal: number;
   remainingTotal: number;
   invoices: Invoice[];
+  financialSummary?: {
+    customerPaymentTotal: number;
+    operationalCostTotal: number;
+    vendorPaidTotal: number;
+    vendorRemainingTotal: number;
+    availableAllocationTotal: number;
+    unallocatedFunds: number;
+    shortfallTotal: number;
+  };
+  expenses?: OperationalExpense[];
 };
 export type Invoice = {
   id: number;
@@ -103,6 +113,56 @@ export type Dashboard = {
   counts: { all: number; unpaid: number; overdue: number; paid: number };
   totals: { billed: number; paid: number; remaining: number };
   recent: Invoice[];
+};
+
+export type OperationalExpense = {
+  id: number;
+  number: string;
+  groupId?: number | null;
+  group?: DepartureGroup | null;
+  category: string;
+  name: string;
+  vendor: string;
+  billNumber?: string | null;
+  totalAmount: number;
+  billDate: string;
+  dueDate?: string | null;
+  notes?: string | null;
+  status: string;
+  allocatedAmount: number;
+  usedAmount: number;
+  remainingBalance: number;
+  availableAllocation: number;
+  shortfall: number;
+  allocations: Array<{ id: number; amount: number; allocationDate: string; notes?: string | null; paymentId: number; paymentNumber?: string | null; isActive: boolean; available: number; used: number; }>;
+  vendorPayments: Array<{ id: number; amount: number; paymentDate: string; method: string; reference?: string | null; notes?: string | null; status: string; allocationId?: number | null; }>;
+};
+
+export type OperationalFinanceSummary = {
+  totalCustomerPayments: number;
+  totalUnallocatedFunds: number;
+  totalAllocatedAvailable: number;
+  totalOperationalCosts: number;
+  totalVendorPayments: number;
+  totalVendorRemaining: number;
+  totalShortfall: number;
+  dueSoonCount: number;
+  overdueCount: number;
+  expenses: OperationalExpense[];
+};
+
+export type OperationalFundSource = {
+  id: number;
+  invoiceId: number;
+  invoiceNumber: string;
+  customerName: string;
+  groupId: number | null;
+  group: DepartureGroup | null;
+  paymentDate: string;
+  description: string;
+  amount: number;
+  allocatedAmount: number;
+  availableAmount: number;
 };
 
 export class ApiError extends Error {
