@@ -8,7 +8,7 @@ The runtime image must provide `pg_dump` and `pg_restore` on `PATH`, or set `PG_
 
 ## First-time bootstrap
 
-Production startup does not run schema push or seed data. For a new database, run these steps explicitly before starting the web service:
+Production startup checks database connectivity with a read-only query; it does not change the schema or seed data. For a new database, run these steps explicitly before starting the web service:
 
 ```text
 pnpm --filter @workspace/db run push
@@ -20,7 +20,7 @@ Do not run `bootstrap` after restoring a complete backup. A restored database al
 
 ## Schema updates
 
-This repository applies schema changes with Drizzle Kit `push`; it does not maintain versioned SQL migration files. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. For an existing environment, take and verify a backup, confirm `DATABASE_URL` targets the intended database, review the Drizzle Kit changes, and run `pnpm --filter @workspace/db run push` as a separate controlled release step before deploying the API. Do not run `bootstrap` for an existing database.
+This repository applies schema changes with Drizzle Kit `push`; it does not maintain versioned SQL migration files. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. For an existing environment, take and verify a backup, confirm `DATABASE_URL` targets the intended database, review the Drizzle Kit changes, and run `pnpm --filter @workspace/db run push` as a separate controlled release step before deploying the API. Do not run `bootstrap` for an existing database. API startup performs only `SELECT 1` against PostgreSQL and does not run DDL, seed, or reset commands.
 
 ## Local smoke test
 
@@ -50,6 +50,6 @@ The pending token and temporary dump are process-local. The prepare and confirm 
 - Ensure the Railway runtime contains trusted PostgreSQL client binaries.
 - Configure `DATABASE_URL`, `SESSION_SECRET`, and the existing application secrets in Railway's secret environment settings.
 - Run schema push and bootstrap as a controlled one-time operation for a new database only.
-- Keep the web service start command pointed at `api-server run start`; it must not run schema push or bootstrap.
+- Keep the web service start command pointed at `api-server run start`; it performs a read-only connectivity check and must not run schema push or bootstrap.
 - Test backup and restore against a disposable Railway PostgreSQL database before using a production dump.
 - Never place a dump file in the public directory or commit it to Git.
