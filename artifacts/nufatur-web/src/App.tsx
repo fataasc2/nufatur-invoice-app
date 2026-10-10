@@ -33,6 +33,11 @@ type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Kesalahan tidak diketahui.";
+}
+
 type InvoiceDraft = {
   id?: number;
   number: string;
@@ -298,9 +303,11 @@ function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; t
 
 function OperationalFinancePage({ onError }: { onError: (message: string) => void }) {
   const [data, setData] = useState<OperationalFinanceSummary | null>(null);
-  const [expenses, setExpenses] = useState<OperationalExpense[]>([]);
+  const [expenses, setExpenses] = useState<OperationalExpense[] | null>(null);
   const [sources, setSources] = useState<OperationalFundSource[]>([]);
+  const [sourcesAvailable, setSourcesAvailable] = useState(false);
   const [groups, setGroups] = useState<DepartureGroup[]>([]);
+  const [loadErrors, setLoadErrors] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [groupFilter, setGroupFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("Semua");
@@ -313,22 +320,40 @@ function OperationalFinancePage({ onError }: { onError: (message: string) => voi
   const [expenseDraft, setExpenseDraft] = useState({ groupId: "", category: "Hotel Makkah", name: "", vendor: "", billNumber: "", totalAmount: "", billDate: today(), dueDate: "", notes: "" });
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   async function load() {
+    setRefreshing(true);
     try {
-      const [summary, expenseResult, sourceResult, groupResult] = await Promise.all([
+      const results = await Promise.allSettled([
         api<OperationalFinanceSummary>("/api/operational-finance/dashboard"),
         api<{ expenses: OperationalExpense[] }>("/api/operational-finance/expenses"),
         api<{ sources: OperationalFundSource[] }>("/api/operational-finance/fund-sources"),
         api<{ groups: DepartureGroup[] }>("/api/groups"),
       ]);
-      setData(summary);
-      setExpenses(expenseResult.expenses);
-      setSources(sourceResult.sources);
-      setGroups(groupResult.groups);
+      const failures: string[] = [];
+      const [summary, expenseResult, sourceResult, groupResult] = results;
+      if (summary.status === "fulfilled") setData(summary.value);
+      else failures.push(`Ringkasan saldo: ${errorMessage(summary.reason)}`);
+      if (expenseResult.status === "fulfilled") setExpenses(expenseResult.value.expenses);
+      else failures.push(`Daftar tagihan: ${errorMessage(expenseResult.reason)}`);
+      if (sourceResult.status === "fulfilled") {
+        setSources(sourceResult.value.sources);
+        setSourcesAvailable(true);
+      }
+      else failures.push(`Sumber dana: ${errorMessage(sourceResult.reason)}`);
+      if (groupResult.status === "fulfilled") setGroups(groupResult.value.groups);
+      else failures.push(`Keberangkatan: ${errorMessage(groupResult.reason)}`);
+      setLoadErrors(failures);
       setLoaded(true);
+      onError(failures.length ? failures.join(" ") : "");
     } catch (error) {
-      onError(error instanceof Error ? error.message : "Gagal memuat keuangan operasional.");
+      const message = errorMessage(error);
+      setLoadErrors([`Gagal memuat keuangan operasional: ${message}`]);
+      setLoaded(true);
+      onError(message);
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -417,7 +442,7 @@ function OperationalFinancePage({ onError }: { onError: (message: string) => voi
     }
   }
 
-  const visibleExpenses = expenses.filter((expense) => {
+  const visibleExpenses = (expenses ?? []).filter((expense) => {
     const matchesSearch = !search || `${expense.number} ${expense.name} ${expense.vendor} ${expense.group?.name ?? "umum"}`.toLowerCase().includes(search.toLowerCase());
     const matchesGroup = groupFilter === "all" || (groupFilter === "general" ? expense.groupId == null : String(expense.groupId) === groupFilter);
     const matchesStatus = statusFilter === "Semua" || expense.status === statusFilter;
@@ -429,8 +454,9 @@ function OperationalFinancePage({ onError }: { onError: (message: string) => voi
   const projectedShortfall = allocationFor ? Math.max(0, allocationFor.remainingBalance - allocationFor.availableAllocation - allocationAmount) : 0;
 
   return <>
-    <PageIntro eyebrow="KEUANGAN OPERASIONAL" title="Keuangan Operasional" description="Pantau pembayaran jamaah tercatat, dana alokasi, tagihan, dan pembayaran vendor." action={<button className="button primary" onClick={() => { setExpenseDraft({ groupId: "", category: "Hotel Makkah", name: "", vendor: "", billNumber: "", totalAmount: "", billDate: today(), dueDate: "", notes: "" }); setDraft(null); }}><Plus size={18} />Tambah tagihan</button>} />
+    <PageIntro eyebrow="KEUANGAN OPERASIONAL" title="Keuangan Operasional" description="Pantau pembayaran jamaah tercatat, dana alokasi, tagihan, dan pembayaran vendor." action={<button type="button" className="button primary" onClick={() => { setExpenseDraft({ groupId: "", category: "Hotel Makkah", name: "", vendor: "", billNumber: "", totalAmount: "", billDate: today(), dueDate: "", notes: "" }); setDraft(null); }}><Plus size={18} />Tambah tagihan</button>} />
     {!loaded && <LoadingBlock />}
+    {loadErrors.length > 0 && <div className="finance-load-error" role="alert"><div><strong>Sebagian data keuangan belum berhasil dimuat.</strong><ul>{loadErrors.map((message) => <li key={message}>{message}</li>)}</ul></div><button type="button" className="button secondary small" disabled={refreshing} onClick={() => void load()}>{refreshing ? "Mencoba lagi..." : "Coba lagi"}</button></div>}
     {data && <>
     <div className="stats-grid">
       <FinanceMetric label="Pembayaran jamaah tercatat" value={data.totalCustomerPayments} icon={<WalletCards />} tone="navy" />
@@ -447,14 +473,14 @@ function OperationalFinancePage({ onError }: { onError: (message: string) => voi
         <div><span>Tagihan terlambat</span><strong className="orange-text">{data.overdueCount}</strong></div>
       </div>
     </section>
+    </>}
     <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">TAGIHAN</p><h3>Daftar tagihan</h3></div></div>
       <div className="toolbar"><div className="search-box"><Search size={18} /><input aria-label="Cari tagihan" placeholder="Cari nomor, nama tagihan, vendor..." value={search} onChange={(event) => setSearch(event.target.value)} /></div><select value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}><option value="all">Semua keberangkatan</option><option value="general">Tagihan umum</option>{groups.map((group) => <option key={group.id} value={String(group.id)}>{group.code} · {group.name}</option>)}</select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>Semua</option><option>BELUM DIBAYAR</option><option>DIBAYAR SEBAGIAN</option><option>LUNAS</option></select></div>
-      {visibleExpenses.length === 0 ? <p className="empty-state">{expenses.length ? "Tidak ada tagihan yang sesuai filter." : "Belum ada tagihan operasional."}</p> : <div className="table-wrap"><table><thead><tr><th>Nomor / kebutuhan</th><th>Keberangkatan</th><th>Vendor</th><th>Tagihan / sisa</th><th>Status</th><th>Jatuh tempo</th><th>Aksi</th></tr></thead><tbody>{visibleExpenses.map((expense) => <tr key={expense.id}><td><button className="text-button" onClick={() => void openDetail(expense.id)}><strong>{expense.number}</strong></button><small>{expense.name}</small></td><td>{expense.group ? `${expense.group.code} · ${expense.group.name}` : "Umum / belum terpetakan"}</td><td>{expense.vendor}</td><td>{money(expense.totalAmount)}<small>Sisa {money(expense.remainingBalance)}</small></td><td><span className={`status ${statusClass(expense.status)}`}>{expense.status}</span></td><td>{expense.dueDate ? formatDate(expense.dueDate) : "-"}</td><td><div className="row-actions"><button className="icon-button" title="Edit tagihan" onClick={() => { setDraft(expense); setExpenseDraft({ groupId: expense.groupId ? String(expense.groupId) : "", category: expense.category, name: expense.name, vendor: expense.vendor, billNumber: expense.billNumber ?? "", totalAmount: String(expense.totalAmount), billDate: expense.billDate, dueDate: expense.dueDate ?? "", notes: expense.notes ?? "" }); }}><Pencil size={16} /></button><button className="icon-button" title="Alokasikan dana" onClick={() => { setAllocationFor(expense); setAllocationDraft({ paymentId: "", amount: "", allocationDate: today(), notes: "" }); }}><WalletCards size={16} /></button><button className="icon-button" title="Bayar vendor" onClick={() => { setVendorPaymentFor(expense); setVendorPaymentDraft({ allocationId: "", amount: "", paymentDate: today(), method: "Transfer", reference: "", notes: "" }); }}><Banknote size={16} /></button></div></td></tr>)}</tbody></table></div>}
+      {expenses === null ? loaded ? <p className="empty-state">Daftar tagihan tidak tersedia karena request gagal. Coba muat ulang.</p> : null : visibleExpenses.length === 0 ? <p className="empty-state">{expenses.length ? "Tidak ada tagihan yang sesuai filter." : "Belum ada tagihan operasional."}</p> : <div className="table-wrap"><table><thead><tr><th>Nomor / kebutuhan</th><th>Keberangkatan</th><th>Vendor</th><th>Tagihan / sisa</th><th>Status</th><th>Jatuh tempo</th><th>Aksi</th></tr></thead><tbody>{visibleExpenses.map((expense) => <tr key={expense.id}><td><button className="text-button" onClick={() => void openDetail(expense.id)}><strong>{expense.number}</strong></button><small>{expense.name}</small></td><td>{expense.group ? `${expense.group.code} · ${expense.group.name}` : "Umum / belum terpetakan"}</td><td>{expense.vendor}</td><td>{money(expense.totalAmount)}<small>Sisa {money(expense.remainingBalance)}</small></td><td><span className={`status ${statusClass(expense.status)}`}>{expense.status}</span></td><td>{expense.dueDate ? formatDate(expense.dueDate) : "-"}</td><td><div className="row-actions"><button className="icon-button" title="Edit tagihan" onClick={() => { setDraft(expense); setExpenseDraft({ groupId: expense.groupId ? String(expense.groupId) : "", category: expense.category, name: expense.name, vendor: expense.vendor, billNumber: expense.billNumber ?? "", totalAmount: String(expense.totalAmount), billDate: expense.billDate, dueDate: expense.dueDate ?? "", notes: expense.notes ?? "" }); }}><Pencil size={16} /></button><button className="icon-button" title="Alokasikan dana" onClick={() => { setAllocationFor(expense); setAllocationDraft({ paymentId: "", amount: "", allocationDate: today(), notes: "" }); }}><WalletCards size={16} /></button><button className="icon-button" title="Bayar vendor" onClick={() => { setVendorPaymentFor(expense); setVendorPaymentDraft({ allocationId: "", amount: "", paymentDate: today(), method: "Transfer", reference: "", notes: "" }); }}><Banknote size={16} /></button></div></td></tr>)}</tbody></table></div>}
     </section>
     <section className="panel recent-panel"><div className="panel-heading"><div><p className="eyebrow">SUMBER DANA</p><h3>Pembayaran jamaah yang tercatat</h3><p className="muted">Invoice yang belum dibayar tidak ditampilkan sebagai sumber dana.</p></div></div>
-      {sources.length === 0 ? <p className="empty-state">Belum ada pembayaran jamaah yang dapat digunakan.</p> : <div className="table-wrap"><table><thead><tr><th>Pembayaran / invoice</th><th>Jamaah</th><th>Keberangkatan</th><th>Tanggal</th><th>Nominal tercatat</th><th>Dialokasikan</th><th>Tersedia</th></tr></thead><tbody>{sources.map((source) => <tr key={source.id}><td>{source.invoiceNumber}<small>{source.description}</small></td><td>{source.customerName}</td><td>{source.group ? `${source.group.code} · ${source.group.name}` : "Belum terpetakan"}</td><td>{formatDate(source.paymentDate)}</td><td>{money(source.amount)}</td><td>{money(source.allocatedAmount)}</td><td>{money(source.availableAmount)}</td></tr>)}</tbody></table></div>}
+      {!sourcesAvailable ? loaded ? <p className="empty-state">Sumber dana tidak tersedia karena request gagal. Coba muat ulang.</p> : null : sources.length === 0 ? <p className="empty-state">Belum ada pembayaran jamaah yang dapat digunakan.</p> : <div className="table-wrap"><table><thead><tr><th>Pembayaran / invoice</th><th>Jamaah</th><th>Keberangkatan</th><th>Tanggal</th><th>Nominal tercatat</th><th>Dialokasikan</th><th>Tersedia</th></tr></thead><tbody>{sources.map((source) => <tr key={source.id}><td>{source.invoiceNumber}<small>{source.description}</small></td><td>{source.customerName}</td><td>{source.group ? `${source.group.code} · ${source.group.name}` : "Belum terpetakan"}</td><td>{formatDate(source.paymentDate)}</td><td>{money(source.amount)}</td><td>{money(source.allocatedAmount)}</td><td>{money(source.availableAmount)}</td></tr>)}</tbody></table></div>}
     </section>
-    </>}
     {draft !== undefined && <Modal title={draft ? "Edit Tagihan Operasional" : "Tambah Tagihan Operasional"} onClose={() => setDraft(undefined)}><form className="form-content" onSubmit={saveExpense}><div className="form-grid two"><label>Keberangkatan<select value={expenseDraft.groupId} onChange={(event) => setExpenseDraft({ ...expenseDraft, groupId: event.target.value })}><option value="">Umum / belum terpetakan</option>{groups.map((group) => <option key={group.id} value={String(group.id)}>{group.code} · {group.name}</option>)}</select></label><label>Kategori<select value={expenseDraft.category} onChange={(event) => setExpenseDraft({ ...expenseDraft, category: event.target.value })}>{["Hotel Makkah", "Hotel Madinah", "Visa", "Tiket pesawat", "Transportasi", "Konsumsi", "Handling", "Perlengkapan", "Lainnya"].map((category) => <option key={category}>{category}</option>)}</select></label><label>Nama kebutuhan<input required value={expenseDraft.name} onChange={(event) => setExpenseDraft({ ...expenseDraft, name: event.target.value })} /></label><label>Vendor<input required value={expenseDraft.vendor} onChange={(event) => setExpenseDraft({ ...expenseDraft, vendor: event.target.value })} /></label><label>Nomor tagihan vendor<input value={expenseDraft.billNumber} onChange={(event) => setExpenseDraft({ ...expenseDraft, billNumber: event.target.value })} /></label><label>Total tagihan<MoneyInput required value={expenseDraft.totalAmount} onChange={(value) => setExpenseDraft({ ...expenseDraft, totalAmount: value })} /></label><label>Tanggal tagihan<input required type="date" value={expenseDraft.billDate} onChange={(event) => setExpenseDraft({ ...expenseDraft, billDate: event.target.value })} /></label><label>Jatuh tempo<input type="date" value={expenseDraft.dueDate} onChange={(event) => setExpenseDraft({ ...expenseDraft, dueDate: event.target.value })} /></label><label className="span-two">Catatan<textarea rows={3} value={expenseDraft.notes} onChange={(event) => setExpenseDraft({ ...expenseDraft, notes: event.target.value })} /></label></div><div className="modal-actions"><button type="button" className="button ghost" onClick={() => setDraft(undefined)}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan tagihan"}</button></div></form></Modal>}
     {allocationFor && <Modal title={`Alokasi dana · ${allocationFor.number}`} onClose={() => setAllocationFor(null)}><form className="form-content" onSubmit={saveAllocation}><label>Sumber pembayaran<select required value={allocationDraft.paymentId} onChange={(event) => setAllocationDraft({ ...allocationDraft, paymentId: event.target.value })}><option value="">Pilih sumber dengan keberangkatan sesuai</option>{sources.filter((source) => source.groupId === allocationFor.groupId && source.availableAmount > 0).map((source) => <option key={source.id} value={String(source.id)}>{source.invoiceNumber} · {source.customerName} · tersedia {money(source.availableAmount)}</option>)}</select></label>{selectedSource && <p className="muted">Tersedia sebelum alokasi: <strong>{money(selectedSource.availableAmount)}</strong></p>}<label>Nominal alokasi<MoneyInput required value={allocationDraft.amount} onChange={(value) => setAllocationDraft({ ...allocationDraft, amount: value })} /></label><label>Tanggal alokasi<input required type="date" value={allocationDraft.allocationDate} onChange={(event) => setAllocationDraft({ ...allocationDraft, allocationDate: event.target.value })} /></label><label>Catatan<input value={allocationDraft.notes} onChange={(event) => setAllocationDraft({ ...allocationDraft, notes: event.target.value })} /></label>{selectedSource && <div className="alert"><div>Sisa sumber setelah alokasi: <strong>{money(Math.max(0, selectedSource.availableAmount - allocationAmount))}</strong><br />Sisa tagihan setelah alokasi: <strong>{money(allocationFor.remainingBalance)}</strong><br />Kekurangan setelah alokasi: <strong>{money(projectedShortfall)}</strong></div></div>}<div className="modal-actions"><button type="button" className="button ghost" onClick={() => setAllocationFor(null)}>Batal</button><button className="button primary" disabled={busy || !selectedAllocation}>{busy ? "Menyimpan..." : "Simpan alokasi"}</button></div></form></Modal>}
     {vendorPaymentFor && <Modal title={`Pembayaran vendor · ${vendorPaymentFor.number}`} onClose={() => setVendorPaymentFor(null)}><form className="form-content" onSubmit={saveVendorPayment}><p>Sisa tagihan saat ini: <strong>{money(vendorPaymentFor.remainingBalance)}</strong></p><label>Alokasi sumber dana<select required value={vendorPaymentDraft.allocationId} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, allocationId: event.target.value })}><option value="">Pilih alokasi aktif</option>{vendorPaymentFor.allocations.filter((allocation) => allocation.isActive && allocation.available > 0).map((allocation) => <option key={allocation.id} value={String(allocation.id)}>{allocation.paymentNumber ?? `Pembayaran #${allocation.paymentId}`} · tersedia {money(allocation.available)}</option>)}</select></label><label>Nominal pembayaran<MoneyInput required value={vendorPaymentDraft.amount} onChange={(value) => setVendorPaymentDraft({ ...vendorPaymentDraft, amount: value })} /></label><label>Tanggal pembayaran<input required type="date" value={vendorPaymentDraft.paymentDate} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, paymentDate: event.target.value })} /></label><label>Metode<select value={vendorPaymentDraft.method} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, method: event.target.value })}><option>Transfer</option><option>Tunai</option><option>Kartu</option><option>Lainnya</option></select></label><label>Referensi transaksi<input value={vendorPaymentDraft.reference} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, reference: event.target.value })} /></label><label>Catatan<input value={vendorPaymentDraft.notes} onChange={(event) => setVendorPaymentDraft({ ...vendorPaymentDraft, notes: event.target.value })} /></label><div className="modal-actions"><button type="button" className="button ghost" onClick={() => setVendorPaymentFor(null)}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Catat pembayaran aktual"}</button></div></form></Modal>}
