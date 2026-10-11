@@ -39,6 +39,7 @@ import {
   withDatabaseLock,
 } from "../lib/database-backup";
 import { logger } from "../lib/logger";
+import { deleteOperationalExpense, operationalFinanceDeleteAccess } from "../lib/operational-expense-delete";
 
 const router: IRouter = Router();
 
@@ -334,6 +335,23 @@ function guard(handler: (req: Request, res: Response, userId: number) => Promise
       return;
     }
     await execute();
+  };
+}
+
+function ownerGuard(handler: (req: Request, res: Response, userId: number) => Promise<void>) {
+  return async (req: Request, res: Response) => {
+    const user = await currentUser(req);
+    const accessStatus = operationalFinanceDeleteAccess(user?.role ?? null);
+    if (accessStatus === 401) {
+      res.status(401).json({ message: "Sesi berakhir. Silakan masuk kembali." });
+      return;
+    }
+    if (accessStatus === 403) {
+      res.status(403).json({ message: "Hanya owner yang dapat menghapus tagihan operasional." });
+      return;
+    }
+    if (!user) throw new Error("Authorized Operational Finance request has no authenticated user.");
+    await withDatabaseLock(() => handler(req, res, user.id));
   };
 }
 
@@ -1278,6 +1296,13 @@ function sendOperationalError(res: Response, result: { error?: string; status?: 
   return true;
 }
 
+function postgresErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  if ("code" in error && typeof error.code === "string") return error.code;
+  if ("cause" in error) return postgresErrorCode(error.cause);
+  return null;
+}
+
 router.get("/operational-finance", guard(async (_req, res) => {
   res.json(await operationalFinanceSummary());
 }));
@@ -1469,6 +1494,54 @@ router.put("/operational-finance/expenses/:id", guard(async (req, res, userId) =
     after: { groupId: result.updated.groupId, totalAmount: result.updated.totalAmount, vendor: result.updated.vendor },
   });
   res.json({ expense: await operationalExpenseRecord(id) });
+}));
+
+router.delete("/operational-finance/expenses/:id", ownerGuard(async (req, res, userId) => {
+  const id = positiveId(req.params.id);
+  if (!id) {
+    res.status(400).json({ message: "ID tagihan operasional tidak valid." });
+    return;
+  }
+
+  try {
+    const result = await db.transaction(async (tx) => deleteOperationalExpense(id, userId, {
+      lockFinance: () => lockOperationalFinance(tx),
+      lockExpense: async (expenseId) => {
+        await tx.execute(sql`SELECT id FROM operational_expenses WHERE id = ${expenseId} FOR UPDATE`);
+      },
+      findExpense: async (expenseId) => (await tx.select({ number: operationalExpenses.number })
+        .from(operationalExpenses).where(eq(operationalExpenses.id, expenseId)).limit(1))[0],
+      hasAllocations: async (expenseId) => Boolean((await tx.select({ id: operationalExpenseAllocations.id })
+        .from(operationalExpenseAllocations).where(eq(operationalExpenseAllocations.expenseId, expenseId)).limit(1))[0]),
+      hasVendorPayments: async (expenseId) => Boolean((await tx.select({ id: operationalVendorPayments.id })
+        .from(operationalVendorPayments).where(eq(operationalVendorPayments.expenseId, expenseId)).limit(1))[0]),
+      deleteExpense: async (expenseId) => Boolean((await tx.delete(operationalExpenses)
+        .where(eq(operationalExpenses.id, expenseId)).returning({ id: operationalExpenses.id }))[0]),
+      writeAudit: async (actorId, expenseId, number) => {
+        await tx.insert(auditLogs).values({
+          userId: actorId,
+          action: "delete",
+          entity: "operational_expense",
+          entityId: expenseId,
+          metadata: { number },
+        });
+      },
+    }));
+
+    if (!result.deleted) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
+    res.json({ message: `Tagihan ${result.number} berhasil dihapus.`, number: result.number });
+  } catch (error) {
+    if (postgresErrorCode(error) === "23503") {
+      res.status(409).json({
+        message: "Tagihan tidak dapat dihapus karena memiliki transaksi keuangan terkait. Periksa histori alokasi dan pembayaran vendor.",
+      });
+      return;
+    }
+    throw error;
+  }
 }));
 
 router.post("/operational-finance/allocations", guard(async (req, res, userId) => {

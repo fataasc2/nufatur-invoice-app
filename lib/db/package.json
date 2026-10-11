@@ -11,6 +11,7 @@
     "diagnose:operational-finance": "node ./scripts/diagnose-operational-finance.mjs",
     "test:operational-finance-diagnostic": "node --test ./scripts/diagnose-operational-finance.test.mjs",
     "test:operational-finance-migration": "node --test ./scripts/operational-finance-migration.test.mjs",
+    "test:operational-finance-delete": "node --experimental-strip-types --test ./scripts/operational-expense-delete.test.mjs",
     "push": "drizzle-kit push --config ./drizzle.config.ts",
     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
   },
