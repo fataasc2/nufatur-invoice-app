@@ -166,7 +166,12 @@ export type OperationalFundSource = {
 };
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly method: string,
+    readonly path: string,
+  ) {
     super(message);
     this.name = "ApiError";
   }
@@ -191,8 +196,19 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
       credentials: "same-origin",
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({ message: response.statusText }));
-      throw new ApiError(typeof payload.message === "string" ? payload.message : "Terjadi kesalahan.", response.status);
+      const payload: unknown = await response.json().catch(() => null);
+      const payloadMessage = payload && typeof payload === "object" && "message" in payload
+        ? payload.message
+        : null;
+      const message = typeof payloadMessage === "string" && payloadMessage.trim()
+        ? payloadMessage.trim()
+        : response.statusText.trim() || "Permintaan gagal.";
+      throw new ApiError(
+        message,
+        response.status,
+        options?.method?.toUpperCase() ?? "GET",
+        path,
+      );
     }
     if (response.status === 204) return undefined as T;
     return await response.json() as T;

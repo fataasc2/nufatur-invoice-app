@@ -35,7 +35,10 @@ type BeforeInstallPromptEvent = Event & {
 };
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Kesalahan tidak diketahui.";
+  if (error instanceof ApiError) {
+    return `${error.method} ${error.path} — HTTP ${error.status}: ${error.message}`;
+  }
+  return error instanceof Error && error.message.trim() ? error.message : "Kesalahan tidak diketahui.";
 }
 
 type InvoiceDraft = {

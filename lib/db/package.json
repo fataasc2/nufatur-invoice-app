@@ -8,6 +8,9 @@
     "./schema": "./src/schema/index.ts"
   },
   "scripts": {
+    "diagnose:operational-finance": "node ./scripts/diagnose-operational-finance.mjs",
+    "test:operational-finance-diagnostic": "node --test ./scripts/diagnose-operational-finance.test.mjs",
+    "test:operational-finance-migration": "node --test ./scripts/operational-finance-migration.test.mjs",
     "push": "drizzle-kit push --config ./drizzle.config.ts",
     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
   },
@@ -18,6 +21,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "catalog:",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.31.10"

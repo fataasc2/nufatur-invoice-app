@@ -20,7 +20,31 @@ Do not run `bootstrap` after restoring a complete backup. A restored database al
 
 ## Schema updates
 
-This repository applies schema changes with Drizzle Kit `push`; it does not maintain versioned SQL migration files. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. For an existing environment, take and verify a backup, confirm `DATABASE_URL` targets the intended database, review the Drizzle Kit changes, and run `pnpm --filter @workspace/db run push` as a separate controlled release step before deploying the API. Do not run `bootstrap` for an existing database. API startup performs only `SELECT 1` against PostgreSQL and does not run DDL, seed, or reset commands.
+This repository currently uses Drizzle Kit `push`; it does not maintain versioned SQL migration files. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. Startup performs only `SELECT 1` and never runs DDL, seed, or reset commands.
+
+The additive migration `lib/db/migrations/0001_operational_finance.sql` creates the three Operational Finance tables, their foreign keys, checks, and indexes. It does not alter invoice, payment, receipt, customer, or departure-group tables. Its transaction-scoped preflight stops before DDL if any target relation already exists or if `public.departure_groups`, `public.payments`, or `public.users` lacks an integer, non-null primary-key `id`. The migration is intended to run once; a second run is rejected without changing existing objects. Test it against disposable PostgreSQL with:
+
+```text
+pnpm --filter @workspace/db run test:operational-finance-migration
+```
+
+Before applying a migration to an existing database, inspect its schema and review the proposed change. The read-only Operational Finance catalog diagnostic compares the three Finance tables in `public` against the repository schema and reports columns, constraints, and indexes:
+
+```text
+pnpm --filter @workspace/db run diagnose:operational-finance
+```
+
+Provide `DATABASE_URL` to this command through a trusted secret environment mechanism; the diagnostic does not print connection details and runs its catalog query inside a PostgreSQL `READ ONLY` transaction. It does not alter data or schema. Run it only for an environment you are authorized to inspect. Do not use `push` or `push-force` as a production repair without first establishing the actual schema and reviewing a migration plan. Do not run `bootstrap` for an existing database.
+
+When using the Railway CLI, run it locally with variables from the PostgreSQL service (replace the service name with the one shown in Railway):
+
+```text
+railway run --no-local --service <PostgreSQL service name> --environment production pnpm --filter @workspace/db run diagnose:operational-finance
+```
+
+The command prints only catalog metadata and the comparison result; it intentionally omits connection details. Review the output before sharing it, since it includes schema/table/column names and the database name.
+
+After a reviewed migration is approved for a controlled release, execute this SQL file once with `psql -v ON_ERROR_STOP=1 -f lib/db/migrations/0001_operational_finance.sql` against the explicitly selected target database. The migration manages its own transaction. Never run this command from API startup or against an unverified target.
 
 ## Local smoke test
 
