@@ -14,6 +14,7 @@ import {
   operationalVendorPayments,
   payments,
   receipts,
+  receiptItems,
   users,
 } from "@workspace/db";
 import { clearSession, currentUser, ensureOwnerAccount, requireUser, setSession, verifyPassword } from "../lib/auth";
@@ -249,12 +250,18 @@ async function invoiceRow(id: number) {
 
 async function receiptRow(id: number) {
   const row = (await db.select(receiptColumns).from(receipts).where(eq(receipts.id, id)).limit(1))[0];
-  return row ? { ...row, includeText: "" } : null;
+  if (!row) return null;
+  const items = await db.select({ description: receiptItems.description, amount: receiptItems.amount })
+    .from(receiptItems).where(eq(receiptItems.receiptId, id)).orderBy(receiptItems.position);
+  return { ...row, lineItems: items.length > 0 ? items : [{ description: row.purpose, amount: row.amount }], includeText: "" };
 }
 
 async function receiptForPayment(paymentId: number) {
   const row = (await db.select(receiptColumns).from(receipts).where(eq(receipts.paymentId, paymentId)).limit(1))[0];
-  return row ? { ...row, includeText: "" } : null;
+  if (!row) return null;
+  const items = await db.select({ description: receiptItems.description, amount: receiptItems.amount })
+    .from(receiptItems).where(eq(receiptItems.receiptId, row.id)).orderBy(receiptItems.position);
+  return { ...row, lineItems: items.length > 0 ? items : [{ description: row.purpose, amount: row.amount }], includeText: "" };
 }
 
 type InvoiceTransactionClient = Pick<typeof db, "select">;
@@ -1109,24 +1116,34 @@ router.post("/payments/:id/receipt", guard(async (req, res, userId) => {
   const body = req.body ?? {};
   const receiptDate = text(body.receiptDate, todayIso());
   try {
-    const receipt = (await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:KWT:" + receiptDate.slice(0, 7)}))`);
       const alreadyCreated = await tx.select({ id: receipts.id }).from(receipts).where(eq(receipts.paymentId, paymentId)).limit(1);
-      if (alreadyCreated[0]) return (await tx.select(receiptColumns).from(receipts).where(eq(receipts.id, alreadyCreated[0].id)).limit(1))[0];
+      if (alreadyCreated[0]) return { id: alreadyCreated[0].id, created: false };
       const numbers = (await tx.select({ number: receipts.number }).from(receipts)).map((row) => row.number);
-      return (await tx.insert(receipts).values({
+      const created = (await tx.insert(receipts).values({
         number: text(body.number, nextDocumentNumber("KWT", numbers, receiptDate)),
         paymentId,
         receiptDate,
         receivedFrom: text(body.receivedFrom, invoice.customerName),
         amount: payment.amount,
         words: terbilang(payment.amount),
-        purpose: text(body.purpose, payment.description),
+        purpose: payment.description,
         notes: optionalText(body.notes),
       }).returning(receiptColumns))[0];
-    }));
-    await audit(userId, "create", "receipt", receipt.id, { paymentId });
-    res.status(201).json({ receipt });
+      if (!created) throw new Error("Penyimpanan kuitansi pembayaran tidak menghasilkan catatan.");
+      await tx.insert(receiptItems).values({
+        receiptId: created.id,
+        position: 0,
+        description: payment.description,
+        amount: payment.amount,
+      });
+      return { id: created.id, created: true };
+    });
+    const receiptWithItems = await receiptForPayment(paymentId);
+    if (!receiptWithItems) throw new Error("Kuitansi pembayaran tidak dapat dibaca setelah disimpan.");
+    if (result.created) await audit(userId, "create", "receipt", result.id, { paymentId });
+    res.status(result.created ? 201 : 200).json({ receipt: receiptWithItems });
   } catch (error) {
     const pgError = error as { code?: string };
     if (pgError.code === "23505") {
@@ -1144,9 +1161,8 @@ router.post("/receipts", guard(async (req, res, userId) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const receiptDate = body.receiptDate == null || body.receiptDate === "" ? todayIso() : body.receiptDate;
   const receivedFrom = text(body.receivedFrom);
-  const amount = positiveMoney(body.amount);
-  const purpose = text(body.purpose);
   const notes = optionalText(body.notes);
+  const rawItems = body.lineItems;
 
   if (!validIsoDate(receiptDate)) {
     res.status(400).json({ message: "Tanggal kuitansi tidak valid." });
@@ -1156,14 +1172,37 @@ router.post("/receipts", guard(async (req, res, userId) => {
     res.status(400).json({ message: "Nama penerima pembayaran wajib diisi dan maksimal 200 karakter." });
     return;
   }
-  if (!amount) {
-    res.status(400).json({ message: "Nominal kuitansi harus berupa bilangan rupiah positif yang valid." });
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    res.status(400).json({ message: "Tambahkan minimal satu rincian pembayaran." });
     return;
   }
-  if (!purpose) {
-    res.status(400).json({ message: "Tujuan pembayaran wajib diisi." });
-    return;
+
+  const lineItems: Array<{ description: string; amount: number }> = [];
+  let amount = 0;
+  for (const [index, rawItem] of rawItems.entries()) {
+    if (rawItem == null || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      res.status(400).json({ message: `Rincian pembayaran ${index + 1} tidak valid.` });
+      return;
+    }
+    const item = rawItem as Record<string, unknown>;
+    const description = text(item.description);
+    const itemAmount = positiveMoney(item.amount);
+    if (!description || description.length > 1000) {
+      res.status(400).json({ message: `Keterangan pembayaran ${index + 1} wajib diisi dan maksimal 1.000 karakter.` });
+      return;
+    }
+    if (itemAmount == null) {
+      res.status(400).json({ message: `Nominal pembayaran ${index + 1} harus berupa bilangan rupiah positif yang valid.` });
+      return;
+    }
+    amount += itemAmount;
+    if (!Number.isSafeInteger(amount) || amount > 99_999_999_999_999) {
+      res.status(400).json({ message: "Total kuitansi melebihi batas nominal yang didukung." });
+      return;
+    }
+    lineItems.push({ description, amount: itemAmount });
   }
+  const purpose = lineItems.map((item) => item.description).join("; ");
 
   const receipt = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:KWT:" + receiptDate.slice(0, 7)}))`);
@@ -1179,20 +1218,39 @@ router.post("/receipts", guard(async (req, res, userId) => {
       notes,
     }).returning(receiptColumns))[0];
     if (!created) throw new Error("Penyimpanan kuitansi mandiri tidak menghasilkan catatan.");
+    await tx.insert(receiptItems).values(lineItems.map((item, position) => ({
+      receiptId: created.id,
+      position,
+      description: item.description,
+      amount: String(item.amount),
+    })));
     await tx.insert(auditLogs).values({
       userId,
       action: "create",
       entity: "receipt",
       entityId: created.id,
-      metadata: { paymentId: null, amount },
+      metadata: { paymentId: null, amount, lineItemCount: lineItems.length },
     });
-    return created;
+    return {
+      ...created,
+      lineItems: lineItems.map((item) => ({ ...item, amount: String(item.amount) })),
+    };
   });
   res.status(201).json({ receipt });
 }));
 
 router.get("/receipts", guard(async (_req, res) => {
   const rows = await db.select(receiptColumns).from(receipts).orderBy(desc(receipts.receiptDate));
+  const lineItemRows = rows.length > 0
+    ? await db.select({ receiptId: receiptItems.receiptId, description: receiptItems.description, amount: receiptItems.amount, position: receiptItems.position })
+      .from(receiptItems).where(inArray(receiptItems.receiptId, rows.map((row) => row.id))).orderBy(receiptItems.position)
+    : [];
+  const lineItemsByReceipt = new Map<number, Array<{ description: string; amount: string }>>();
+  for (const item of lineItemRows) {
+    const items = lineItemsByReceipt.get(item.receiptId) ?? [];
+    items.push({ description: item.description, amount: item.amount });
+    lineItemsByReceipt.set(item.receiptId, items);
+  }
   const paymentRows = await db.select({ id: payments.id, invoiceId: payments.invoiceId }).from(payments);
   const invoiceRows = await db.select({ id: invoices.id, number: invoices.number, groupId: invoices.groupId }).from(invoices);
   const groupRows = await db.select(groupColumns).from(departureGroups);
@@ -1206,6 +1264,7 @@ router.get("/receipts", guard(async (_req, res) => {
         : invoiceMap.get(paymentMap.get(receipt.paymentId)?.invoiceId ?? -1);
       return {
         ...receipt,
+        lineItems: lineItemsByReceipt.get(receipt.id) ?? [{ description: receipt.purpose, amount: receipt.amount }],
         includeText: "",
         invoice: invoice ?? null,
         group: invoice?.groupId ? groupMap.get(invoice.groupId) ?? null : null,
@@ -1258,6 +1317,7 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     pdfNotes: company.pdfNotes,
   }, {
     ...receipt,
+    lineItems: receipt.lineItems,
     invoiceNumber: invoice?.number ?? null,
     method: payment?.method ?? null,
     bank: payment?.bank ?? null,

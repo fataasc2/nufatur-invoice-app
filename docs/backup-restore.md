@@ -22,7 +22,7 @@ Do not run `bootstrap` after restoring a complete backup. A restored database al
 
 This repository generally uses Drizzle Kit `push`, with reviewed, versioned SQL migrations for Operational Finance and receipt schema changes. Tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. Startup performs only `SELECT 1` and never runs DDL, seed, or reset commands.
 
-The additive migration `lib/db/migrations/0001_operational_finance.sql` creates the three Operational Finance tables, their foreign keys, checks, and indexes. Migration `0002_operational_vendor_payment_idempotency.sql` adds a nullable vendor-payment request key and a partial unique index; it leaves all existing transaction rows and their request keys untouched. Migration `0003_standalone_receipts.sql` makes `receipts.payment_id` nullable so administrators can create receipts without an invoice payment, while preserving existing receipt rows and payment links. Migration 0001's transaction-scoped preflight stops before DDL if any target relation already exists or if a required parent table lacks an integer, non-null primary-key `id`. Test the migrations against disposable PostgreSQL with:
+The additive migration `lib/db/migrations/0001_operational_finance.sql` creates the three Operational Finance tables, their foreign keys, checks, and indexes. Migration `0002_operational_vendor_payment_idempotency.sql` adds a nullable vendor-payment request key and a partial unique index; it leaves all existing transaction rows and their request keys untouched. Migration `0003_standalone_receipts.sql` makes `receipts.payment_id` nullable so administrators can create receipts without an invoice payment, while preserving existing receipt rows and payment links. Migration `0004_receipt_items.sql` creates persistent ordered receipt details and backfills one detail from every existing receipt without changing receipt totals, links, or other columns. Migration 0001's transaction-scoped preflight stops before DDL if any target relation already exists or if a required parent table lacks an integer, non-null primary-key `id`. Test the migrations against disposable PostgreSQL with:
 
 ```text
 pnpm --filter @workspace/db run test:operational-finance-migration
@@ -59,6 +59,14 @@ psql -v ON_ERROR_STOP=1 -f lib/db/migrations/0003_standalone_receipts.sql
 ```
 
 This migration only drops the `NOT NULL` requirement on `payment_id`; it does not rewrite or delete existing receipts. Do not run it against an unverified target.
+
+For multi-payment receipts, verify that `public.receipts` and `public.payments` exist, then apply migration 0004 to the explicitly selected database:
+
+```text
+psql -v ON_ERROR_STOP=1 -f lib/db/migrations/0004_receipt_items.sql
+```
+
+This additive migration inserts a single legacy detail for each receipt that has no details yet. It keeps the existing receipt amount and payment relationship intact, and does not run automatically at API startup.
 
 ## Local smoke test
 

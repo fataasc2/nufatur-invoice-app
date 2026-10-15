@@ -673,8 +673,10 @@ function PaymentsPage({ onNotice, onError }: { onNotice: (message: string) => vo
 function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => void; onError: (message: string) => void }) {
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
-  const [draft, setDraft] = useState({ receiptDate: today(), receivedFrom: "", amount: "", purpose: "", notes: "" });
+  const [detailReceipt, setDetailReceipt] = useState<Receipt | null>(null);
+  const [draft, setDraft] = useState({ receiptDate: today(), receivedFrom: "", lineItems: [{ description: "", amount: "" }], notes: "" });
   const [busy, setBusy] = useState(false);
+  const total = draft.lineItems.reduce((sum, item) => sum + parseMoneyInput(item.amount), 0);
   const load = () => api<{ receipts: Receipt[] }>("/api/receipts").then((result) => setReceipts(result.receipts)).catch((error) => onError(error.message));
   useEffect(() => { void load(); }, []);
   async function save(event: React.FormEvent) {
@@ -683,10 +685,13 @@ function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => vo
     try {
       const result = await api<{ receipt: Receipt }>("/api/receipts", {
         method: "POST",
-        body: JSON.stringify({ ...draft, amount: parseMoneyInput(draft.amount) }),
+        body: JSON.stringify({
+          ...draft,
+          lineItems: draft.lineItems.map((item) => ({ ...item, amount: parseMoneyInput(item.amount) })),
+        }),
       });
       setReceipts((current) => [result.receipt, ...current]);
-      setDraft({ receiptDate: today(), receivedFrom: "", amount: "", purpose: "", notes: "" });
+      setDraft({ receiptDate: today(), receivedFrom: "", lineItems: [{ description: "", amount: "" }], notes: "" });
       setCreateOpen(false);
       onNotice("Kuitansi berhasil dibuat.");
     } catch (error) {
@@ -697,15 +702,29 @@ function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => vo
   }
   return <>
     <PageIntro eyebrow="BUKTI PEMBAYARAN" title="Kuitansi" description="Buat kuitansi mandiri atau dari pembayaran invoice." action={<button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={16} />Buat kuitansi</button>} />
-    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Nomor</th><th>Tanggal</th><th>Telah diterima dari</th><th>Untuk pembayaran</th><th>Nominal</th><th /></tr></thead><tbody>{receipts.map((receipt) => { const previewUrl = `/api/receipts/${receipt.id}/pdf?inline=1`; return <tr key={receipt.id}><td><strong>{receipt.number}</strong></td><td>{formatDate(receipt.receiptDate)}</td><td>{receipt.receivedFrom}</td><td>{receipt.purpose}<small>{receipt.invoice?.number ?? ""}</small></td><td><strong>{money(receipt.amount)}</strong></td><td><div className="row-actions"><a className="button small secondary" href={previewUrl} target="_blank" rel="noreferrer"><FileText size={14} />Preview</a><a className="button small secondary" href={`/api/receipts/${receipt.id}/pdf`}><ArrowDownToLine size={14} />Download</a><button className="button small secondary" onClick={() => window.open(previewUrl, "_blank")}><ClipboardList size={14} />Print</button></div></td></tr>; })}</tbody></table>{receipts.length === 0 && <div className="empty-state"><ReceiptText size={26} /><h3>Belum ada kuitansi</h3><p>Buat kuitansi dari halaman ini atau dari riwayat pembayaran invoice.</p></div>}</div></section>
+    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Nomor</th><th>Tanggal</th><th>Telah diterima dari</th><th>Untuk pembayaran</th><th>Nominal</th><th /></tr></thead><tbody>{receipts.map((receipt) => { const previewUrl = `/api/receipts/${receipt.id}/pdf?inline=1`; return <tr key={receipt.id}><td><strong>{receipt.number}</strong></td><td>{formatDate(receipt.receiptDate)}</td><td>{receipt.receivedFrom}</td><td>{receipt.lineItems.length > 1 ? `${receipt.lineItems.length} rincian pembayaran` : receipt.lineItems[0]?.description ?? receipt.purpose}<small>{receipt.invoice?.number ?? ""}</small></td><td><strong>{money(receipt.amount)}</strong></td><td><div className="row-actions"><button className="button small secondary" onClick={() => setDetailReceipt(receipt)}><ClipboardList size={14} />Rincian</button><a className="button small secondary" href={previewUrl} target="_blank" rel="noreferrer"><FileText size={14} />Preview</a><a className="button small secondary" href={`/api/receipts/${receipt.id}/pdf`}><ArrowDownToLine size={14} />Download</a><button className="button small secondary" onClick={() => window.open(previewUrl, "_blank")}><ClipboardList size={14} />Print</button></div></td></tr>; })}</tbody></table>{receipts.length === 0 && <div className="empty-state"><ReceiptText size={26} /><h3>Belum ada kuitansi</h3><p>Buat kuitansi dari halaman ini atau dari riwayat pembayaran invoice.</p></div>}</div></section>
     {createOpen && <Modal title="Buat kuitansi mandiri" onClose={() => setCreateOpen(false)}><form className="form-content" onSubmit={save}>
       <label>Tanggal kuitansi<input required type="date" value={draft.receiptDate} onChange={(event) => setDraft({ ...draft, receiptDate: event.target.value })} /></label>
       <label>Telah diterima dari<input required maxLength={200} value={draft.receivedFrom} onChange={(event) => setDraft({ ...draft, receivedFrom: event.target.value })} /></label>
-      <label>Nominal<MoneyInput required min="1" value={draft.amount} onChange={(value) => setDraft({ ...draft, amount: value })} /></label>
-      <label>Untuk pembayaran<input required value={draft.purpose} onChange={(event) => setDraft({ ...draft, purpose: event.target.value })} /></label>
+      <section className="receipt-items-editor">
+        <div className="section-heading"><h3>Rincian pembayaran</h3><button type="button" className="button small secondary" onClick={() => setDraft({ ...draft, lineItems: [...draft.lineItems, { description: "", amount: "" }] })}><Plus size={14} />Tambah baris</button></div>
+        {draft.lineItems.map((item, index) => <div className="receipt-item-row" key={index}>
+          <label>Keterangan pembayaran {index + 1}<input required maxLength={1000} value={item.description} onChange={(event) => setDraft({ ...draft, lineItems: draft.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, description: event.target.value } : line) })} /></label>
+          <label>Nominal<MoneyInput required min="1" value={item.amount} onChange={(value) => setDraft({ ...draft, lineItems: draft.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, amount: value } : line) })} /></label>
+          <button type="button" className="icon-button" aria-label={`Hapus rincian ${index + 1}`} disabled={draft.lineItems.length === 1} onClick={() => setDraft({ ...draft, lineItems: draft.lineItems.filter((_, lineIndex) => lineIndex !== index) })}><Trash2 size={16} /></button>
+        </div>)}
+        <div className="total-highlight receipt-total"><span>Total kuitansi</span><strong>{money(total)}</strong></div>
+      </section>
       <label>Catatan<textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} rows={2} /></label>
       <div className="modal-actions"><button type="button" className="button ghost" onClick={() => setCreateOpen(false)}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan kuitansi"}</button></div>
     </form></Modal>}
+    {detailReceipt && <Modal title={`Rincian kuitansi ${detailReceipt.number}`} onClose={() => setDetailReceipt(null)}>
+      <div className="receipt-detail">
+        <p><strong>Telah diterima dari:</strong> {detailReceipt.receivedFrom}</p>
+        {detailReceipt.lineItems.map((item, index) => <div className="receipt-detail-row" key={`${detailReceipt.id}-${index}`}><span>{item.description}</span><strong>{money(item.amount)}</strong></div>)}
+        <div className="receipt-detail-total"><strong>Total kuitansi</strong><strong>{money(detailReceipt.amount)}</strong></div>
+      </div>
+    </Modal>}
   </>;
 }
 

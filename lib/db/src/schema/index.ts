@@ -138,6 +138,17 @@ export const receipts = pgTable("receipts", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const receiptItems = pgTable("receipt_items", {
+  id: serial("id").primaryKey(),
+  receiptId: integer("receipt_id").notNull().references(() => receipts.id, { onDelete: "cascade" }),
+  position: integer("position").notNull().default(0),
+  description: text("description").notNull(),
+  amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),
+}, (table) => [
+  uniqueIndex("receipt_items_receipt_id_position_uidx").on(table.receiptId, table.position),
+  check("receipt_items_amount_check", sql`${table.amount} > 0`),
+]);
+
 export const operationalExpenses = pgTable("operational_expenses", {
   id: serial("id").primaryKey(),
   number: varchar("number", { length: 80 }).notNull().unique(),

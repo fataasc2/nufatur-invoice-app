@@ -84,6 +84,7 @@ export type Receipt = {
   amount: string;
   words: string;
   purpose: string;
+  lineItems: Array<{ description: string; amount: string }>;
   notes?: string | null;
   includeText: string;
   invoice?: { id: number; number: string } | null;

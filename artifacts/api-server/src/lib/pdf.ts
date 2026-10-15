@@ -73,6 +73,7 @@ type PdfReceipt = {
   amount: string;
   words: string;
   purpose: string;
+  lineItems?: Array<{ description: string; amount: string }>;
   invoiceNumber?: string | null;
   method?: string | null;
   bank?: string | null;
@@ -619,7 +620,6 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
   const receiptRows: Array<[string, string]> = [
     ["GROUP / PAKET", receipt.groupName || "-"],
     ["KEBERANGKATAN", formatDepartureDate(receipt.departureDate) || "-"],
-    ["UNTUK PEMBAYARAN", receipt.purpose || "-"],
     ["INVOICE", receipt.invoiceNumber || "Kuitansi mandiri"],
     ["METODE PEMBAYARAN", `${receipt.method || "-"}${receipt.bank ? ` • ${receipt.bank}` : ""}`],
   ];
@@ -628,20 +628,85 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
     doc.font("Helvetica-Bold").fontSize(8).fillColor("#52616a").text(label, LEFT, y, { width: 125 });
     doc.font("Helvetica").fontSize(9).fillColor("#1c2a32").text(value, LEFT + 135, y, { width: CONTENT_WIDTH - 135, height: 22, lineGap: 1, ellipsis: true });
   });
-  const amountY = 352;
-  doc.roundedRect(LEFT, amountY, CONTENT_WIDTH, 58, 6).fill("#e7f0f4");
-  doc.font("Helvetica-Bold").fontSize(8).fillColor("#287261").text("JUMLAH DITERIMA", LEFT + 14, amountY + 11);
-  doc.font("Helvetica-Bold").fontSize(19).fillColor("#16394b").text(money(receipt.amount), LEFT + 14, amountY + 25);
-  doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("TERBILANG", LEFT + 205, amountY + 11);
-  doc.font("Helvetica").fontSize(8).fillColor("#52616a").text(receipt.words || "-", LEFT + 205, amountY + 24, { width: 270, height: 28, lineGap: 1, ellipsis: true });
-  doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("RINGKASAN PEMBAYARAN", LEFT, 438);
-  if (receipt.invoiceNumber) {
-    drawSummary(doc, [["TOTAL INVOICE", money(receipt.total)], ["TOTAL DIBAYAR", money(receipt.paid)], ["SISA PEMBAYARAN", money(receipt.remaining)], ["STATUS", receipt.status || "-"]], 453);
-  } else {
-    drawSummary(doc, [["JUMLAH DITERIMA", money(receipt.amount)], ["STATUS", "KUITANSI MANDIRI"]], 453);
+  let y = 332;
+  const lineItems = receipt.lineItems?.length
+    ? receipt.lineItems
+    : [{ description: receipt.purpose || "Pembayaran", amount: receipt.amount }];
+  const drawReceiptTableHeader = (continuation = false) => {
+    doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252")
+      .text(continuation ? "RINCIAN PEMBAYARAN - LANJUTAN" : "RINCIAN PEMBAYARAN", LEFT, y);
+    y += 16;
+    doc.roundedRect(LEFT, y, CONTENT_WIDTH, 19, 3).fill("#e7f0f4");
+    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#234252")
+      .text("KETERANGAN", LEFT + 8, y + 6, { width: CONTENT_WIDTH - 145 });
+    doc.text("NOMINAL", RIGHT - 128, y + 6, { width: 120, align: "right" });
+    y += 23;
+  };
+  const nextReceiptPage = () => {
+    y = newReceiptPage(doc, company, receipt.number);
+    drawReceiptTableHeader(true);
+  };
+  drawReceiptTableHeader();
+  for (const item of lineItems) {
+    let remainingDescription = item.description || "Pembayaran";
+    let showAmount = true;
+    while (remainingDescription) {
+      doc.font("Helvetica").fontSize(8);
+      const descriptionWidth = CONTENT_WIDTH - 145;
+      const fullHeight = Math.max(23, doc.heightOfString(remainingDescription, { width: descriptionWidth, lineGap: 1 }) + 10);
+      const availableHeight = CONTENT_BOTTOM - y;
+      if (fullHeight <= availableHeight) {
+        doc.font("Helvetica").fontSize(8).fillColor("#1c2a32")
+          .text(remainingDescription, LEFT + 8, y + 5, { width: descriptionWidth, lineGap: 1 });
+        if (showAmount) {
+          doc.font("Helvetica-Bold").fontSize(8).fillColor("#1c2a32")
+            .text(money(item.amount), RIGHT - 128, y + 6, { width: 120, align: "right" });
+        }
+        y += fullHeight;
+        doc.moveTo(LEFT, y).lineTo(RIGHT, y).strokeColor("#d5dde2").lineWidth(0.5).stroke();
+        y += 2;
+        break;
+      }
+      if (availableHeight < 30) {
+        nextReceiptPage();
+        continue;
+      }
+      const [visibleDescription, rest] = splitTextToFit(doc, remainingDescription, descriptionWidth, availableHeight - 10, 1);
+      if (!visibleDescription || visibleDescription === remainingDescription) {
+        nextReceiptPage();
+        continue;
+      }
+      doc.font("Helvetica").fontSize(8).fillColor("#1c2a32")
+        .text(visibleDescription, LEFT + 8, y + 5, { width: descriptionWidth, lineGap: 1 });
+      if (showAmount) {
+        doc.font("Helvetica-Bold").fontSize(8).fillColor("#1c2a32")
+          .text(money(item.amount), RIGHT - 128, y + 6, { width: 120, align: "right" });
+      }
+      y += Math.min(availableHeight, doc.heightOfString(visibleDescription, { width: descriptionWidth, lineGap: 1 }) + 10);
+      remainingDescription = rest;
+      showAmount = false;
+      nextReceiptPage();
+    }
   }
-  drawFixedNotes(doc, receipt.notes || "", 535, 70);
-  drawSignature(doc, company, INVOICE_SLOTS.signatureY);
+  const summaryRows: Array<[string, string]> = receipt.invoiceNumber
+    ? [["TOTAL INVOICE", money(receipt.total)], ["TOTAL DIBAYAR", money(receipt.paid)], ["SISA PEMBAYARAN", money(receipt.remaining)], ["STATUS", receipt.status || "-"]]
+    : [["STATUS", "KUITANSI MANDIRI"]];
+  const summaryHeight = Math.ceil(summaryRows.length / 2) * 16;
+  const finalBlocksHeight = 72 + 15 + summaryHeight + 8 + 82 + signatureHeight(true);
+  if (y + finalBlocksHeight > CONTENT_BOTTOM) {
+    y = newReceiptPage(doc, company, receipt.number);
+  }
+  doc.roundedRect(LEFT, y, CONTENT_WIDTH, 62, 6).fill("#e7f0f4");
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#287261").text("TOTAL KESELURUHAN DITERIMA", LEFT + 14, y + 8);
+  doc.font("Helvetica-Bold").fontSize(19).fillColor("#16394b").text(money(receipt.amount), LEFT + 14, y + 22);
+  doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("TERBILANG", LEFT + 205, y + 8);
+  doc.font("Helvetica").fontSize(8).fillColor("#52616a").text(receipt.words || "-", LEFT + 205, y + 21, { width: 270, height: 32, lineGap: 1, ellipsis: true });
+  y += 72;
+  doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("RINGKASAN PEMBAYARAN", LEFT, y);
+  y = drawSummary(doc, summaryRows, y + 15) + 8;
+  drawFixedNotes(doc, receipt.notes || "", y, 70);
+  y += 82;
+  drawSignature(doc, company, y, true);
   addFooters(doc, company);
   doc.end();
 }

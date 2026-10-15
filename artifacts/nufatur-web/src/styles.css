@@ -286,3 +286,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .operational-finance-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.receipt-items-editor { display: grid; gap: 12px; margin: 22px 0; padding: 16px; border: 1px solid #e4ecee; border-radius: 8px; background: #fff; }
+.receipt-items-editor .section-heading { margin-bottom: 0; }
+.receipt-item-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(130px, .45fr) 32px; gap: 10px; align-items: end; }
+.receipt-item-row label { font-size: 11px; }
+.receipt-item-row .icon-button { margin-bottom: 4px; }
+.receipt-item-row .icon-button:disabled { opacity: .4; cursor: not-allowed; }
+.receipt-total { max-width: none; margin: 4px 0 0; padding-top: 10px; }
+.receipt-detail { padding: 22px 24px 24px; }
+.receipt-detail > p { margin: 0 0 18px; color: #526b75; }
+.receipt-detail-row, .receipt-detail-total { display: flex; justify-content: space-between; gap: 20px; padding: 11px 0; border-bottom: 1px solid #e7eef0; color: #526b75; }
+.receipt-detail-row strong, .receipt-detail-total strong { color: var(--navy); text-align: right; }
+.receipt-detail-total { margin-top: 8px; border-top: 2px solid #d6e3e4; border-bottom: 0; font-size: 15px; color: var(--teal); }
+@media (max-width: 600px) {
+  .receipt-item-row { grid-template-columns: minmax(0, 1fr) 32px; }
+  .receipt-item-row label:first-child { grid-column: 1 / -1; }
+}
