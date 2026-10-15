@@ -1140,6 +1140,57 @@ router.post("/payments/:id/receipt", guard(async (req, res, userId) => {
   }
 }));
 
+router.post("/receipts", guard(async (req, res, userId) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const receiptDate = body.receiptDate == null || body.receiptDate === "" ? todayIso() : body.receiptDate;
+  const receivedFrom = text(body.receivedFrom);
+  const amount = positiveMoney(body.amount);
+  const purpose = text(body.purpose);
+  const notes = optionalText(body.notes);
+
+  if (!validIsoDate(receiptDate)) {
+    res.status(400).json({ message: "Tanggal kuitansi tidak valid." });
+    return;
+  }
+  if (!receivedFrom || receivedFrom.length > 200) {
+    res.status(400).json({ message: "Nama penerima pembayaran wajib diisi dan maksimal 200 karakter." });
+    return;
+  }
+  if (!amount) {
+    res.status(400).json({ message: "Nominal kuitansi harus berupa bilangan rupiah positif yang valid." });
+    return;
+  }
+  if (!purpose) {
+    res.status(400).json({ message: "Tujuan pembayaran wajib diisi." });
+    return;
+  }
+
+  const receipt = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:KWT:" + receiptDate.slice(0, 7)}))`);
+    const numbers = (await tx.select({ number: receipts.number }).from(receipts)).map((row) => row.number);
+    const created = (await tx.insert(receipts).values({
+      number: nextDocumentNumber("KWT", numbers, receiptDate),
+      paymentId: null,
+      receiptDate,
+      receivedFrom,
+      amount: String(amount),
+      words: terbilang(amount),
+      purpose,
+      notes,
+    }).returning(receiptColumns))[0];
+    if (!created) throw new Error("Penyimpanan kuitansi mandiri tidak menghasilkan catatan.");
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "create",
+      entity: "receipt",
+      entityId: created.id,
+      metadata: { paymentId: null, amount },
+    });
+    return created;
+  });
+  res.status(201).json({ receipt });
+}));
+
 router.get("/receipts", guard(async (_req, res) => {
   const rows = await db.select(receiptColumns).from(receipts).orderBy(desc(receipts.receiptDate));
   const paymentRows = await db.select({ id: payments.id, invoiceId: payments.invoiceId }).from(payments);
@@ -1148,7 +1199,19 @@ router.get("/receipts", guard(async (_req, res) => {
   const paymentMap = new Map(paymentRows.map((payment) => [payment.id, payment]));
   const invoiceMap = new Map(invoiceRows.map((invoice) => [invoice.id, invoice]));
   const groupMap = new Map(groupRows.map((group) => [group.id, group]));
-  res.json({ receipts: rows.map((receipt) => { const invoice = invoiceMap.get(paymentMap.get(receipt.paymentId)?.invoiceId ?? -1); return { ...receipt, includeText: "", invoice, group: invoice?.groupId ? groupMap.get(invoice.groupId) ?? null : null }; }) });
+  res.json({
+    receipts: rows.map((receipt) => {
+      const invoice = receipt.paymentId == null
+        ? undefined
+        : invoiceMap.get(paymentMap.get(receipt.paymentId)?.invoiceId ?? -1);
+      return {
+        ...receipt,
+        includeText: "",
+        invoice: invoice ?? null,
+        group: invoice?.groupId ? groupMap.get(invoice.groupId) ?? null : null,
+      };
+    }),
+  });
 }));
 
 router.get("/export/invoices.csv", guard(async (_req, res) => {
@@ -1181,9 +1244,11 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     res.status(404).json({ message: "Data kuitansi tidak ditemukan." });
     return;
   }
-  const payment = (await db.select().from(payments).where(eq(payments.id, receipt.paymentId)).limit(1))[0];
+  const payment = receipt.paymentId == null
+    ? null
+    : (await db.select().from(payments).where(eq(payments.id, receipt.paymentId)).limit(1))[0] ?? null;
   const invoice = payment ? await invoiceRecord(payment.invoiceId) : null;
-  if (!payment || !invoice) {
+  if (receipt.paymentId != null && (!payment || !invoice)) {
     res.status(404).json({ message: "Pembayaran terkait tidak ditemukan." });
     return;
   }
@@ -1193,20 +1258,20 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     pdfNotes: company.pdfNotes,
   }, {
     ...receipt,
-    invoiceNumber: invoice.number,
-    method: payment.method,
-    bank: payment.bank,
-    includeText: receipt.includeText || invoice.includeText || company.includeText,
-    subtotal: invoice.subtotal,
-    discount: invoice.discount,
-    tax: invoice.tax,
-    cashback: invoice.additionalCost,
-    total: invoice.total,
-    paid: invoice.paid,
-    remaining: invoice.remaining,
-    status: invoice.status,
-    departureDate: invoice.group?.departureDate,
-    groupName: invoice.group ? `${invoice.group.name} • ${invoice.group.packageName}` : null,
+    invoiceNumber: invoice?.number ?? null,
+    method: payment?.method ?? null,
+    bank: payment?.bank ?? null,
+    includeText: receipt.includeText || invoice?.includeText || company.includeText,
+    subtotal: invoice?.subtotal ?? moneyValue(receipt.amount),
+    discount: invoice?.discount ?? 0,
+    tax: invoice?.tax ?? 0,
+    cashback: invoice?.additionalCost ?? 0,
+    total: invoice?.total ?? moneyValue(receipt.amount),
+    paid: invoice?.paid ?? moneyValue(receipt.amount),
+    remaining: invoice?.remaining ?? 0,
+    status: invoice?.status ?? "KUITANSI MANDIRI",
+    departureDate: invoice?.group?.departureDate,
+    groupName: invoice?.group ? `${invoice.group.name} • ${invoice.group.packageName}` : null,
   }, req.query.inline === "1");
 }));
 

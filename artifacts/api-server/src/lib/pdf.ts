@@ -73,19 +73,19 @@ type PdfReceipt = {
   amount: string;
   words: string;
   purpose: string;
-  invoiceNumber: string;
-  method: string;
+  invoiceNumber?: string | null;
+  method?: string | null;
   bank?: string | null;
   notes?: string | null;
   includeText?: string | null;
-  subtotal: number;
-  discount: number;
-  tax: number;
-  cashback: number;
-  total: number;
-  paid: number;
-  remaining: number;
-  status: string;
+  subtotal?: number;
+  discount?: number;
+  tax?: number;
+  cashback?: number;
+  total?: number;
+  paid?: number;
+  remaining?: number;
+  status?: string;
   departureDate?: string | null;
   groupName?: string | null;
 };
@@ -619,11 +619,12 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
   const receiptRows: Array<[string, string]> = [
     ["GROUP / PAKET", receipt.groupName || "-"],
     ["KEBERANGKATAN", formatDepartureDate(receipt.departureDate) || "-"],
-    ["UNTUK PEMBAYARAN", `Invoice: ${receipt.invoiceNumber || "-"}`],
+    ["UNTUK PEMBAYARAN", receipt.purpose || "-"],
+    ["INVOICE", receipt.invoiceNumber || "Kuitansi mandiri"],
     ["METODE PEMBAYARAN", `${receipt.method || "-"}${receipt.bank ? ` • ${receipt.bank}` : ""}`],
   ];
   receiptRows.forEach(([label, value], index) => {
-    const y = 226 + index * 28;
+    const y = 218 + index * 25;
     doc.font("Helvetica-Bold").fontSize(8).fillColor("#52616a").text(label, LEFT, y, { width: 125 });
     doc.font("Helvetica").fontSize(9).fillColor("#1c2a32").text(value, LEFT + 135, y, { width: CONTENT_WIDTH - 135, height: 22, lineGap: 1, ellipsis: true });
   });
@@ -634,7 +635,11 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
   doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#287261").text("TERBILANG", LEFT + 205, amountY + 11);
   doc.font("Helvetica").fontSize(8).fillColor("#52616a").text(receipt.words || "-", LEFT + 205, amountY + 24, { width: 270, height: 28, lineGap: 1, ellipsis: true });
   doc.font("Helvetica-Bold").fontSize(8).fillColor("#234252").text("RINGKASAN PEMBAYARAN", LEFT, 438);
-  drawSummary(doc, [["TOTAL INVOICE", money(receipt.total)], ["TOTAL DIBAYAR", money(receipt.paid)], ["SISA PEMBAYARAN", money(receipt.remaining)], ["STATUS", receipt.status]], 453);
+  if (receipt.invoiceNumber) {
+    drawSummary(doc, [["TOTAL INVOICE", money(receipt.total)], ["TOTAL DIBAYAR", money(receipt.paid)], ["SISA PEMBAYARAN", money(receipt.remaining)], ["STATUS", receipt.status || "-"]], 453);
+  } else {
+    drawSummary(doc, [["JUMLAH DITERIMA", money(receipt.amount)], ["STATUS", "KUITANSI MANDIRI"]], 453);
+  }
   drawFixedNotes(doc, receipt.notes || "", 535, 70);
   drawSignature(doc, company, INVOICE_SLOTS.signatureY);
   addFooters(doc, company);

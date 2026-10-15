@@ -20,9 +20,9 @@ Do not run `bootstrap` after restoring a complete backup. A restored database al
 
 ## Schema updates
 
-This repository generally uses Drizzle Kit `push`, with reviewed, versioned SQL migrations for Operational Finance schema changes. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. Startup performs only `SELECT 1` and never runs DDL, seed, or reset commands.
+This repository generally uses Drizzle Kit `push`, with reviewed, versioned SQL migrations for Operational Finance and receipt schema changes. Tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. Startup performs only `SELECT 1` and never runs DDL, seed, or reset commands.
 
-The additive migration `lib/db/migrations/0001_operational_finance.sql` creates the three Operational Finance tables, their foreign keys, checks, and indexes. Migration `0002_operational_vendor_payment_idempotency.sql` adds a nullable vendor-payment request key and a partial unique index; it leaves all existing transaction rows and their request keys untouched. It does not change invoice, payment, receipt, customer, or departure-group data. Migration 0001's transaction-scoped preflight stops before DDL if any target relation already exists or if a required parent table lacks an integer, non-null primary-key `id`. Test both migrations against disposable PostgreSQL with:
+The additive migration `lib/db/migrations/0001_operational_finance.sql` creates the three Operational Finance tables, their foreign keys, checks, and indexes. Migration `0002_operational_vendor_payment_idempotency.sql` adds a nullable vendor-payment request key and a partial unique index; it leaves all existing transaction rows and their request keys untouched. Migration `0003_standalone_receipts.sql` makes `receipts.payment_id` nullable so administrators can create receipts without an invoice payment, while preserving existing receipt rows and payment links. Migration 0001's transaction-scoped preflight stops before DDL if any target relation already exists or if a required parent table lacks an integer, non-null primary-key `id`. Test the migrations against disposable PostgreSQL with:
 
 ```text
 pnpm --filter @workspace/db run test:operational-finance-migration
@@ -51,6 +51,14 @@ psql -v ON_ERROR_STOP=1 -f lib/db/migrations/0002_operational_vendor_payment_ide
 ```
 
 The migration manages its own transaction. Never run it from API startup, against an unverified target, or as a substitute for the 0001 migration on a database that does not have the existing Finance tables.
+
+For standalone receipt support, first verify that `public.receipts.payment_id` exists and is an integer using a read-only catalog query. Then apply only migration 0003 to the explicitly selected database:
+
+```text
+psql -v ON_ERROR_STOP=1 -f lib/db/migrations/0003_standalone_receipts.sql
+```
+
+This migration only drops the `NOT NULL` requirement on `payment_id`; it does not rewrite or delete existing receipts. Do not run it against an unverified target.
 
 ## Local smoke test
 

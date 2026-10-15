@@ -292,7 +292,7 @@ function App() {
           {view === "groups" && <GroupsPage onNotice={setNotice} onError={setError} />}
         {view === "invoices" && <InvoicesPage onNotice={setNotice} onError={setError} onNavigate={navigate} />}
         {view === "payments" && <PaymentsPage onNotice={setNotice} onError={setError} />}
-        {view === "receipts" && <ReceiptsPage onError={setError} />}
+        {view === "receipts" && <ReceiptsPage onNotice={setNotice} onError={setError} />}
         {view === "financials" && <OperationalFinancePage isOwner={user.role === "owner"} onNotice={setNotice} onError={setError} />}
         {view === "settings" && <SettingsPage onNotice={setNotice} onError={setError} />}
       </div>
@@ -670,10 +670,43 @@ function PaymentsPage({ onNotice, onError }: { onNotice: (message: string) => vo
   return <><PageIntro eyebrow="ARUS KAS MASUK" title="Pembayaran" description="Riwayat pembayaran dari seluruh invoice." /><div className="toolbar"><div className="search-box"><Search size={18} /><input placeholder="Cari pembayaran, invoice, customer..." value={search} onChange={(event) => setSearch(event.target.value)} /></div></div><section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Tanggal</th><th>Customer</th><th>Invoice</th><th>Deskripsi</th><th>Bank / Metode</th><th>Nominal</th><th /></tr></thead><tbody>{payments.map((payment) => <tr key={payment.id}><td>{formatDate(payment.paymentDate)}</td><td>{payment.invoice?.customerName ?? "-"}</td><td><strong>{payment.invoice?.number ?? "-"}</strong></td><td>{payment.description}</td><td>{payment.bank || payment.method}<small>{payment.bank ? payment.method : ""}</small></td><td><strong className="green-text">{money(payment.amount)}</strong></td><td><button className="button small secondary" onClick={() => void makeReceipt(payment)}><ReceiptText size={14} />Kuitansi</button></td></tr>)}</tbody></table>{payments.length === 0 && <div className="empty-state"><Banknote size={26} /><h3>Belum ada pembayaran</h3><p>Pembayaran yang dicatat dari detail invoice akan muncul di sini.</p></div>}</div></section></>;
 }
 
-function ReceiptsPage({ onError }: { onError: (message: string) => void }) {
+function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => void; onError: (message: string) => void }) {
   const [receipts, setReceipts] = useState<Receipt[]>([]);
-  useEffect(() => { api<{ receipts: Receipt[] }>("/api/receipts").then((result) => setReceipts(result.receipts)).catch((error) => onError(error.message)); }, [onError]);
-  return <><PageIntro eyebrow="BUKTI PEMBAYARAN" title="Kuitansi" description="Kuitansi yang dibuat dari payment history invoice." /><section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Nomor</th><th>Tanggal</th><th>Telah diterima dari</th><th>Untuk pembayaran</th><th>Nominal</th><th /></tr></thead><tbody>{receipts.map((receipt) => { const previewUrl = `/api/receipts/${receipt.id}/pdf?inline=1`; return <tr key={receipt.id}><td><strong>{receipt.number}</strong></td><td>{formatDate(receipt.receiptDate)}</td><td>{receipt.receivedFrom}</td><td>{receipt.purpose}<small>{receipt.invoice?.number ?? ""}</small></td><td><strong>{money(receipt.amount)}</strong></td><td><div className="row-actions"><a className="button small secondary" href={previewUrl} target="_blank" rel="noreferrer"><FileText size={14} />Preview</a><a className="button small secondary" href={`/api/receipts/${receipt.id}/pdf`}><ArrowDownToLine size={14} />Download</a><button className="button small secondary" onClick={() => window.open(previewUrl, "_blank")}><ClipboardList size={14} />Print</button></div></td></tr>; })}</tbody></table>{receipts.length === 0 && <div className="empty-state"><ReceiptText size={26} /><h3>Belum ada kuitansi</h3><p>Buat kuitansi dari riwayat pembayaran invoice.</p></div>}</div></section></>;
+  const [createOpen, setCreateOpen] = useState(false);
+  const [draft, setDraft] = useState({ receiptDate: today(), receivedFrom: "", amount: "", purpose: "", notes: "" });
+  const [busy, setBusy] = useState(false);
+  const load = () => api<{ receipts: Receipt[] }>("/api/receipts").then((result) => setReceipts(result.receipts)).catch((error) => onError(error.message));
+  useEffect(() => { void load(); }, []);
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const result = await api<{ receipt: Receipt }>("/api/receipts", {
+        method: "POST",
+        body: JSON.stringify({ ...draft, amount: parseMoneyInput(draft.amount) }),
+      });
+      setReceipts((current) => [result.receipt, ...current]);
+      setDraft({ receiptDate: today(), receivedFrom: "", amount: "", purpose: "", notes: "" });
+      setCreateOpen(false);
+      onNotice("Kuitansi berhasil dibuat.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Gagal membuat kuitansi.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <>
+    <PageIntro eyebrow="BUKTI PEMBAYARAN" title="Kuitansi" description="Buat kuitansi mandiri atau dari pembayaran invoice." action={<button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={16} />Buat kuitansi</button>} />
+    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Nomor</th><th>Tanggal</th><th>Telah diterima dari</th><th>Untuk pembayaran</th><th>Nominal</th><th /></tr></thead><tbody>{receipts.map((receipt) => { const previewUrl = `/api/receipts/${receipt.id}/pdf?inline=1`; return <tr key={receipt.id}><td><strong>{receipt.number}</strong></td><td>{formatDate(receipt.receiptDate)}</td><td>{receipt.receivedFrom}</td><td>{receipt.purpose}<small>{receipt.invoice?.number ?? ""}</small></td><td><strong>{money(receipt.amount)}</strong></td><td><div className="row-actions"><a className="button small secondary" href={previewUrl} target="_blank" rel="noreferrer"><FileText size={14} />Preview</a><a className="button small secondary" href={`/api/receipts/${receipt.id}/pdf`}><ArrowDownToLine size={14} />Download</a><button className="button small secondary" onClick={() => window.open(previewUrl, "_blank")}><ClipboardList size={14} />Print</button></div></td></tr>; })}</tbody></table>{receipts.length === 0 && <div className="empty-state"><ReceiptText size={26} /><h3>Belum ada kuitansi</h3><p>Buat kuitansi dari halaman ini atau dari riwayat pembayaran invoice.</p></div>}</div></section>
+    {createOpen && <Modal title="Buat kuitansi mandiri" onClose={() => setCreateOpen(false)}><form className="form-content" onSubmit={save}>
+      <label>Tanggal kuitansi<input required type="date" value={draft.receiptDate} onChange={(event) => setDraft({ ...draft, receiptDate: event.target.value })} /></label>
+      <label>Telah diterima dari<input required maxLength={200} value={draft.receivedFrom} onChange={(event) => setDraft({ ...draft, receivedFrom: event.target.value })} /></label>
+      <label>Nominal<MoneyInput required min="1" value={draft.amount} onChange={(value) => setDraft({ ...draft, amount: value })} /></label>
+      <label>Untuk pembayaran<input required value={draft.purpose} onChange={(event) => setDraft({ ...draft, purpose: event.target.value })} /></label>
+      <label>Catatan<textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} rows={2} /></label>
+      <div className="modal-actions"><button type="button" className="button ghost" onClick={() => setCreateOpen(false)}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan kuitansi"}</button></div>
+    </form></Modal>}
+  </>;
 }
 
 function SettingsPage({ onNotice, onError }: { onNotice: (message: string) => void; onError: (message: string) => void }) {

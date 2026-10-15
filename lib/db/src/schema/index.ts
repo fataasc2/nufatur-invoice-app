@@ -128,7 +128,7 @@ export const payments = pgTable("payments", {
 export const receipts = pgTable("receipts", {
   id: serial("id").primaryKey(),
   number: varchar("number", { length: 80 }).notNull().unique(),
-  paymentId: integer("payment_id").notNull().unique().references(() => payments.id, { onDelete: "cascade" }),
+  paymentId: integer("payment_id").unique().references(() => payments.id, { onDelete: "cascade" }),
   receiptDate: date("receipt_date").notNull(),
   receivedFrom: varchar("received_from", { length: 200 }).notNull(),
   amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),

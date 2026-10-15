@@ -78,7 +78,7 @@ export type Invoice = {
 export type Receipt = {
   id: number;
   number: string;
-  paymentId: number;
+  paymentId: number | null;
   receiptDate: string;
   receivedFrom: string;
   amount: string;
@@ -86,7 +86,7 @@ export type Receipt = {
   purpose: string;
   notes?: string | null;
   includeText: string;
-  invoice?: { id: number; number: string };
+  invoice?: { id: number; number: string } | null;
   group?: DepartureGroup | null;
 };
 export type Settings = {
