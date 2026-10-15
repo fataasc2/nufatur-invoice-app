@@ -140,6 +140,7 @@ export type OperationalExpense = {
 
 export type OperationalFinanceSummary = {
   totalCustomerPayments: number;
+  totalAvailableFunds: number;
   totalUnallocatedFunds: number;
   totalAllocatedAvailable: number;
   totalOperationalCosts: number;

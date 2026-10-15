@@ -10,6 +10,7 @@ import {
   serial,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -188,11 +189,14 @@ export const operationalVendorPayments = pgTable("operational_vendor_payments", 
   status: varchar("status", { length: 32 }).notNull().default("posted"),
   createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
   reversalOf: integer("reversal_of"),
+  requestKey: varchar("request_key", { length: 100 }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("operational_vendor_payments_expense_id_idx").on(table.expenseId),
   index("operational_vendor_payments_allocation_id_idx").on(table.allocationId),
   index("operational_vendor_payments_reversal_of_idx").on(table.reversalOf),
+  uniqueIndex("operational_vendor_payments_request_key_uidx").on(table.requestKey)
+    .where(sql`${table.requestKey} IS NOT NULL`),
   check("operational_vendor_payments_amount_check", sql`${table.amount} > 0`),
 ]);
 

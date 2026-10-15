@@ -20,9 +20,9 @@ Do not run `bootstrap` after restoring a complete backup. A restored database al
 
 ## Schema updates
 
-This repository currently uses Drizzle Kit `push`; it does not maintain versioned SQL migration files. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. Startup performs only `SELECT 1` and never runs DDL, seed, or reset commands.
+This repository generally uses Drizzle Kit `push`, with reviewed, versioned SQL migrations for Operational Finance schema changes. Operational-finance tables and constraints are declared in `lib/db/src/schema/index.ts` and are not created by API startup. Startup performs only `SELECT 1` and never runs DDL, seed, or reset commands.
 
-The additive migration `lib/db/migrations/0001_operational_finance.sql` creates the three Operational Finance tables, their foreign keys, checks, and indexes. It does not alter invoice, payment, receipt, customer, or departure-group tables. Its transaction-scoped preflight stops before DDL if any target relation already exists or if `public.departure_groups`, `public.payments`, or `public.users` lacks an integer, non-null primary-key `id`. The migration is intended to run once; a second run is rejected without changing existing objects. Test it against disposable PostgreSQL with:
+The additive migration `lib/db/migrations/0001_operational_finance.sql` creates the three Operational Finance tables, their foreign keys, checks, and indexes. Migration `0002_operational_vendor_payment_idempotency.sql` adds a nullable vendor-payment request key and a partial unique index; it leaves all existing transaction rows and their request keys untouched. It does not change invoice, payment, receipt, customer, or departure-group data. Migration 0001's transaction-scoped preflight stops before DDL if any target relation already exists or if a required parent table lacks an integer, non-null primary-key `id`. Test both migrations against disposable PostgreSQL with:
 
 ```text
 pnpm --filter @workspace/db run test:operational-finance-migration
@@ -44,7 +44,13 @@ railway run --no-local --service <PostgreSQL service name> --environment product
 
 The command prints only catalog metadata and the comparison result; it intentionally omits connection details. Review the output before sharing it, since it includes schema/table/column names and the database name.
 
-After a reviewed migration is approved for a controlled release, execute this SQL file once with `psql -v ON_ERROR_STOP=1 -f lib/db/migrations/0001_operational_finance.sql` against the explicitly selected target database. The migration manages its own transaction. Never run this command from API startup or against an unverified target.
+After the existing Operational Finance schema is confirmed with the read-only diagnostic, apply only the new additive migration to the explicitly selected database:
+
+```text
+psql -v ON_ERROR_STOP=1 -f lib/db/migrations/0002_operational_vendor_payment_idempotency.sql
+```
+
+The migration manages its own transaction. Never run it from API startup, against an unverified target, or as a substitute for the 0001 migration on a database that does not have the existing Finance tables.
 
 ## Local smoke test
 

@@ -178,6 +178,7 @@ body { min-width: 0; }
 .login-heading h2, .page-intro h2, .topbar h1, .panel-heading h3, .detail-top h3 { overflow-wrap: anywhere; }
 .page-intro > div, .stat-card > div:last-child, .quick-actions span { min-width: 0; }
 .stats-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.operational-finance-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .dashboard-grid { grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); }
 .settings-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -209,6 +210,7 @@ textarea { max-width: 100%; }
 @media (max-width: 1000px) {
   .login-screen { grid-template-columns: minmax(0, 1fr) minmax(360px, min(42vw, 480px)); }
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .operational-finance-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-grid { grid-template-columns: minmax(0, 1fr); }
   .form-grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .item-row { grid-template-columns: 25px minmax(0, 2fr) minmax(0, .7fr) repeat(3, minmax(0, 1fr)) minmax(0, 1.3fr) 32px; }
@@ -282,4 +284,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 @media (min-width: 1001px) and (max-width: 1100px) {
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .operational-finance-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

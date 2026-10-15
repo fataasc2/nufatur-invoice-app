@@ -1212,6 +1212,7 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
 
 async function operationalFinanceSummary(): Promise<{
   totalCustomerPayments: number;
+  totalAvailableFunds: number;
   totalUnallocatedFunds: number;
   totalAllocatedAvailable: number;
   totalOperationalCosts: number;
@@ -1222,10 +1223,10 @@ async function operationalFinanceSummary(): Promise<{
   overdueCount: number;
   expenses: Array<{ id: number; number: string; name: string; vendor: string; totalAmount: number; dueDate?: string | null; status: string; allocatedAmount: number; usedAmount: number; remainingBalance: number; availableAllocation: number; shortfall: number; group?: { id: number; code: string; name: string; departureDate: string } | null; }>;
 }> {
+  const cashTotals = await operationalCashTotals(db);
   const paymentRows = await db.select({ id: payments.id, amount: payments.amount }).from(payments)
     .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
     .where(and(ne(invoices.status, "draft"), ne(invoices.status, "cancelled")));
-  const paymentAmountTotal = paymentRows.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
   const activeAllocations = await db.select({ paymentId: operationalExpenseAllocations.paymentId, amount: operationalExpenseAllocations.amount }).from(operationalExpenseAllocations)
     .where(eq(operationalExpenseAllocations.isActive, true));
   const allocationsByPayment = new Map<number, number>();
@@ -1236,16 +1237,16 @@ async function operationalFinanceSummary(): Promise<{
   const expenses = await db.select().from(operationalExpenses).orderBy(desc(operationalExpenses.dueDate), desc(operationalExpenses.createdAt));
   const expenseRecords = (await Promise.all(expenses.map((expense) => operationalExpenseRecord(expense.id)))).filter((expense): expense is NonNullable<typeof expense> => expense != null);
   const totalOperationalCosts = expenseRecords.reduce((sum, expense) => sum + expense.totalAmount, 0);
-  const totalVendorPayments = expenseRecords.reduce((sum, expense) => sum + expense.usedAmount, 0);
   const totalVendorRemaining = expenseRecords.reduce((sum, expense) => sum + expense.remainingBalance, 0);
   const totalAllocatedAvailable = expenseRecords.reduce((sum, expense) => sum + expense.availableAllocation, 0);
   const totalShortfall = expenseRecords.reduce((sum, expense) => sum + expense.shortfall, 0);
   return {
-    totalCustomerPayments: paymentAmountTotal,
+    totalCustomerPayments: cashTotals.totalCustomerPayments,
+    totalAvailableFunds: cashTotals.totalCustomerPayments - cashTotals.totalVendorPayments,
     totalUnallocatedFunds,
     totalAllocatedAvailable,
     totalOperationalCosts,
-    totalVendorPayments,
+    totalVendorPayments: cashTotals.totalVendorPayments,
     totalVendorRemaining,
     totalShortfall,
     dueSoonCount: expenseRecords.filter((expense) => expense.remainingBalance > 0 && expense.dueDate != null && expense.dueDate >= todayIso() && expense.dueDate <= new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)).length,
@@ -1268,6 +1269,41 @@ async function operationalFinanceSummary(): Promise<{
   };
 }
 
+type OperationalCashTotals = {
+  totalCustomerPayments: number;
+  totalVendorPayments: number;
+};
+
+async function operationalCashTotals(client: Pick<typeof db, "execute">): Promise<OperationalCashTotals> {
+  const result = await client.execute(sql`
+    SELECT
+      COALESCE((
+        SELECT SUM(payments.amount)
+        FROM public.payments
+        INNER JOIN public.invoices ON public.invoices.id = public.payments.invoice_id
+        WHERE public.invoices.status NOT IN ('draft', 'cancelled')
+      ), 0) AS total_customer_payments,
+      COALESCE((
+        SELECT SUM(amount)
+        FROM public.operational_vendor_payments
+        WHERE status = 'posted'
+      ), 0) AS total_vendor_payments
+  `);
+  const totals = result.rows[0];
+  if (!totals) throw new Error("Ringkasan saldo operasional tidak tersedia.");
+  return {
+    totalCustomerPayments: databaseMoneyValue(totals.total_customer_payments, "total pembayaran jamaah"),
+    totalVendorPayments: databaseMoneyValue(totals.total_vendor_payments, "total pembayaran vendor"),
+  };
+}
+
+function databaseMoneyValue(value: unknown, label: string): number {
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw new Error(`Nilai ${label} pada database tidak valid.`);
+  }
+  return moneyValue(value);
+}
+
 async function lockOperationalFinance(tx: Pick<typeof db, "execute">): Promise<void> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('nufatur-operational-finance'))`);
 }
@@ -1287,6 +1323,11 @@ function validIsoDate(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validRequestKey(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function sendOperationalError(res: Response, result: { error?: string; status?: number }): boolean {
@@ -1647,65 +1688,96 @@ router.delete("/operational-finance/allocations/:id", guard(async (req, res, use
 router.post("/operational-finance/vendor-payments", guard(async (req, res, userId) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const expenseId = positiveId(body.expenseId);
-  const allocationId = positiveId(body.allocationId);
+  const allocationProvided = body.allocationId != null && body.allocationId !== "";
+  const allocationId = allocationProvided ? positiveId(body.allocationId) : null;
   const amount = positiveMoney(body.amount);
   const paymentDate = body.paymentDate == null || body.paymentDate === "" ? todayIso() : body.paymentDate;
-  if (!expenseId || !allocationId) {
-    res.status(400).json({ message: "Pembayaran vendor wajib menggunakan alokasi dana yang valid." });
+  const requestKey = body.requestKey;
+  const reference = optionalText(body.reference);
+  const method = body.method == null || body.method === ""
+    ? "Transfer"
+    : typeof body.method === "string" ? body.method.trim() : "";
+  if (!expenseId || (allocationProvided && !allocationId)) {
+    res.status(400).json({ message: "Tagihan atau alokasi dana tidak valid." });
+    return;
+  }
+  if (!validRequestKey(requestKey)) {
+    res.status(400).json({ message: "Kunci permintaan pembayaran vendor tidak valid." });
     return;
   }
   if (!amount) {
     res.status(400).json({ message: "Nominal pembayaran vendor harus berupa bilangan rupiah positif yang valid." });
     return;
   }
-  if (!validIsoDate(paymentDate)) {
-    res.status(400).json({ message: "Tanggal pembayaran vendor tidak valid." });
+  if (!validIsoDate(paymentDate) || !method || method.length > 40 || (reference != null && reference.length > 200)) {
+    res.status(400).json({ message: "Tanggal, metode, atau referensi pembayaran vendor tidak valid." });
     return;
   }
   const result = await db.transaction(async (tx) => {
     await lockOperationalFinance(tx);
-    await tx.execute(sql`SELECT id FROM operational_expenses WHERE id = ${expenseId} FOR UPDATE`);
-    await tx.execute(sql`SELECT id FROM operational_expense_allocations WHERE id = ${allocationId} FOR UPDATE`);
-    const expense = (await tx.select().from(operationalExpenses).where(eq(operationalExpenses.id, expenseId)).limit(1))[0];
-    const allocation = (await tx.select().from(operationalExpenseAllocations).where(eq(operationalExpenseAllocations.id, allocationId)).limit(1))[0];
-    if (!expense || !allocation) return { error: "Tagihan atau alokasi tidak ditemukan.", status: 404 as const };
-    if (allocation.expenseId !== expenseId || !allocation.isActive) {
-      return { error: "Alokasi dana tidak aktif atau bukan untuk tagihan ini.", status: 409 as const };
+    const existingRequest = (await tx.select().from(operationalVendorPayments)
+      .where(eq(operationalVendorPayments.requestKey, requestKey)).limit(1))[0];
+    if (existingRequest) {
+      if (existingRequest.expenseId !== expenseId || moneyValue(existingRequest.amount) !== amount) {
+        return { error: "Kunci permintaan ini sudah digunakan untuk pembayaran yang berbeda.", status: 409 as const };
+      }
+      if (existingRequest.status !== "posted" || existingRequest.reversalOf != null) {
+        return { error: "Pembayaran untuk permintaan ini sudah direversal dan tidak dapat diulang.", status: 409 as const };
+      }
+      return { payment: existingRequest, duplicate: true };
     }
-    const source = (await tx.select({ groupId: invoices.groupId, invoiceStatus: invoices.status }).from(payments)
-      .innerJoin(invoices, eq(invoices.id, payments.invoiceId)).where(eq(payments.id, allocation.paymentId)).limit(1))[0];
-    if (!source || source.invoiceStatus === "draft" || source.invoiceStatus === "cancelled" || source.groupId !== expense.groupId) {
-      return { error: "Sumber pembayaran alokasi tidak lagi valid untuk tagihan ini.", status: 409 as const };
+    await tx.execute(sql`SELECT id FROM operational_expenses WHERE id = ${expenseId} FOR UPDATE`);
+    if (allocationId != null) {
+      await tx.execute(sql`SELECT id FROM operational_expense_allocations WHERE id = ${allocationId} FOR UPDATE`);
+    }
+    const expense = (await tx.select().from(operationalExpenses).where(eq(operationalExpenses.id, expenseId)).limit(1))[0];
+    if (!expense) return { error: "Tagihan operasional tidak ditemukan.", status: 404 as const };
+    const allocation = allocationId == null
+      ? undefined
+      : (await tx.select().from(operationalExpenseAllocations)
+        .where(eq(operationalExpenseAllocations.id, allocationId)).limit(1))[0];
+    if (allocationId != null && !allocation) {
+      return { error: "Alokasi dana tidak ditemukan.", status: 404 as const };
+    }
+    if (allocation && (allocation.expenseId !== expenseId || !allocation.isActive)) {
+      return { error: "Alokasi dana tidak aktif atau bukan untuk tagihan ini.", status: 409 as const };
     }
     const paid = (await tx.select({ amount: operationalVendorPayments.amount }).from(operationalVendorPayments)
       .where(and(eq(operationalVendorPayments.expenseId, expenseId), eq(operationalVendorPayments.status, "posted"))))
       .reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
     const remaining = Math.max(0, moneyValue(expense.totalAmount) - paid);
     if (amount > remaining) return { error: `Pembayaran vendor melebihi sisa tagihan. Maksimal: ${remaining}.`, status: 409 as const };
-    const used = (await tx.select({ amount: operationalVendorPayments.amount }).from(operationalVendorPayments)
-      .where(and(eq(operationalVendorPayments.allocationId, allocationId), eq(operationalVendorPayments.status, "posted"))))
-      .reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
-    const available = Math.max(0, moneyValue(allocation.amount) - used);
-    if (amount > available) return { error: `Pembayaran vendor melebihi dana alokasi yang tersedia. Maksimal: ${available}.`, status: 409 as const };
+    const cashTotals = await operationalCashTotals(tx);
+    const availableFunds = cashTotals.totalCustomerPayments - cashTotals.totalVendorPayments;
+    if (amount > availableFunds) {
+      return { error: `Saldo dana operasional tidak mencukupi. Tersedia: ${availableFunds}.`, status: 409 as const };
+    }
     const payment = (await tx.insert(operationalVendorPayments).values({
       expenseId,
-      allocationId,
+      allocationId: allocationId ?? null,
       paymentDate,
       amount: String(amount),
-      method: text(body.method, "Transfer"),
-      reference: optionalText(body.reference),
+      method,
+      reference,
       notes: optionalText(body.notes),
       status: "posted",
       createdBy: userId,
       reversalOf: null,
+      requestKey,
     }).returning())[0];
     if (!payment) throw new Error("Penyimpanan pembayaran vendor tidak menghasilkan catatan.");
-    return { payment };
+    await tx.insert(auditLogs).values({
+      userId,
+      action: "create",
+      entity: "operational_vendor_payment",
+      entityId: payment.id,
+      metadata: { expenseId, allocationId, amount },
+    });
+    return { payment, duplicate: false };
   });
   if (sendOperationalError(res, result)) return;
   if (!result.payment) throw new Error("Transaksi pembayaran vendor berhasil tanpa catatan pembayaran.");
-  await audit(userId, "create", "operational_vendor_payment", result.payment.id, { expenseId, allocationId, amount });
-  res.status(201).json({ payment: result.payment, expense: await operationalExpenseRecord(expenseId) });
+  res.status(result.duplicate ? 200 : 201).json({ payment: result.payment, expense: await operationalExpenseRecord(expenseId) });
 }));
 
 router.delete("/operational-finance/vendor-payments/:id", guard(async (req, res, userId) => {
