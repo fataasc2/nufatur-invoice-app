@@ -303,6 +303,49 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .receipt-item-row label:first-child { grid-column: 1 / -1; }
 }
 
+@media (min-width: 721px) {
+  .sidebar {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    max-height: 100vh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+}
+
+.sidebar nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  align-content: start;
+  scrollbar-width: thin;
+}
+.sidebar nav button { flex: 0 0 auto; }
+.sidebar-scrim {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.user-chip > div:last-child { min-width: 0; overflow-wrap: anywhere; }
+button, a, input, textarea, select { touch-action: manipulation; }
+
+@media (max-width: 720px) {
+  .sidebar {
+    width: min(255px, calc(100vw - 48px));
+    overflow: hidden;
+    visibility: hidden;
+    transition: transform .22s ease, visibility 0s linear .22s;
+  }
+  .sidebar.open { visibility: visible; transition: transform .22s ease; }
+}
+
 .table-wrap { min-width: 0; overscroll-behavior-x: contain; scrollbar-width: thin; }
 .stat-card { min-width: 0; }
 .stat-card strong, .table-wrap td:first-child { overflow-wrap: anywhere; }

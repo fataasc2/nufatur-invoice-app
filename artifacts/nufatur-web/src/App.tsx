@@ -256,6 +256,27 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const mobileViewport = window.matchMedia("(max-width: 720px)");
+    const closeOnDesktop = (event: MediaQueryListEvent) => {
+      if (!event.matches) setSidebarOpen(false);
+    };
+    if (!mobileViewport.matches) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    mobileViewport.addEventListener("change", closeOnDesktop);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+      mobileViewport.removeEventListener("change", closeOnDesktop);
+    };
+  }, [sidebarOpen]);
+
   if (booting) return <div className="loading-screen"><div className="spinner" /><span>Menyiapkan ruang kerja...</span></div>;
   if (!user) return <LoginScreen onLogin={setUser} initialError={bootError} />;
 
@@ -282,7 +303,7 @@ function App() {
         <button className="logout-button" onClick={logout}><LogOut size={17} />Keluar</button>
       </div>
     </aside>
-    {sidebarOpen && <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />}
+    {sidebarOpen && <button type="button" className="sidebar-scrim" aria-label="Tutup menu navigasi" onClick={() => setSidebarOpen(false)} />}
     <main className="main-area">
       <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)} aria-label="Buka menu navigasi" aria-controls="app-sidebar" aria-expanded={sidebarOpen}><Menu size={22} /></button><div><p className="topbar-kicker">PT NURUL FAJAR ABINAYA</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div><div className="topbar-actions"><PwaInstallButton /><div className="topbar-meta"><span className="online-dot" />Sistem aktif</div></div></header>
       {notice && <div className="toast success"><Check size={17} />{notice}</div>}
