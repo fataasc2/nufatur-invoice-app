@@ -346,6 +346,20 @@ button, a, input, textarea, select { touch-action: manipulation; }
   .sidebar.open { visibility: visible; transition: transform .22s ease; }
 }
 
+.operational-finance-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1200px) {
+  .operational-finance-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 721px) and (max-width: 1000px) {
+  .operational-finance-stats .stat-card strong { font-size: clamp(16px, 2vw, 20px); }
+}
+@media (min-width: 1201px) and (max-width: 1366px) {
+  .operational-finance-stats .stat-card strong { font-size: 22px; }
+}
+@media (max-width: 440px) {
+  .operational-finance-stats { grid-template-columns: minmax(0, 1fr); }
+}
+
 .table-wrap { min-width: 0; overscroll-behavior-x: contain; scrollbar-width: thin; }
 .stat-card { min-width: 0; }
 .stat-card strong, .table-wrap td:first-child { overflow-wrap: anywhere; }
