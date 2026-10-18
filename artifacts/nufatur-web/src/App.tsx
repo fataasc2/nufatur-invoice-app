@@ -305,7 +305,7 @@ function App() {
     </aside>
     {sidebarOpen && <button type="button" className="sidebar-scrim" aria-label="Tutup menu navigasi" onClick={() => setSidebarOpen(false)} />}
     <main className="main-area">
-      <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)} aria-label="Buka menu navigasi" aria-controls="app-sidebar" aria-expanded={sidebarOpen}><Menu size={22} /></button><div><p className="topbar-kicker">PT NURUL FAJAR ABINAYA</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div><div className="topbar-actions"><PwaInstallButton /><div className="topbar-meta"><span className="online-dot" />Sistem aktif</div></div></header>
+      <header className="topbar"><div className="topbar-inner"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)} aria-label="Buka menu navigasi" aria-controls="app-sidebar" aria-expanded={sidebarOpen}><Menu size={22} /></button><div className="topbar-title"><p className="topbar-kicker">PT NURUL FAJAR ABINAYA</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div><div className="topbar-actions"><PwaInstallButton /><div className="topbar-meta"><span className="online-dot" />Sistem aktif</div></div></div></header>
       {notice && <div className="toast success"><Check size={17} />{notice}</div>}
       {error && <div className="toast error"><CircleAlert size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div>}
       <div className="page-content">
