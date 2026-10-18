@@ -227,7 +227,7 @@ function LoginScreen({ onLogin, initialError = "" }: { onLogin: (user: User) => 
 
 function Modal({ title, children, onClose, wide = false }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className={`modal ${wide ? "wide" : ""}`}><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Tutup"><X size={20} /></button></div>{children}</section>
+    <section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Tutup"><X size={20} /></button></div>{children}</section>
   </div>;
 }
 
@@ -270,10 +270,10 @@ function App() {
   }
 
   return <div className="app-shell">
-    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+    <aside id="app-sidebar" className={`sidebar ${sidebarOpen ? "open" : ""}`}>
       <div className="sidebar-top">
         <div className="brand-lockup light"><div className="brand-symbol">N</div><div><strong>NUFATUR</strong><span>Invoice App</span></div></div>
-        <button className="sidebar-close icon-button" onClick={() => setSidebarOpen(false)}><X size={20} /></button>
+        <button className="sidebar-close icon-button" onClick={() => setSidebarOpen(false)} aria-label="Tutup menu navigasi"><X size={20} /></button>
       </div>
       <div className="workspace-label">RUANG KERJA</div>
       <nav>{navItems.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? "active" : ""} onClick={() => navigate(id)}><Icon size={19} /><span>{label}</span>{view === id && <ChevronRight size={16} className="nav-arrow" />}</button>)}</nav>
@@ -284,7 +284,7 @@ function App() {
     </aside>
     {sidebarOpen && <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} />}
     <main className="main-area">
-      <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)}><Menu size={22} /></button><div><p className="topbar-kicker">PT NURUL FAJAR ABINAYA</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div><div className="topbar-actions"><PwaInstallButton /><div className="topbar-meta"><span className="online-dot" />Sistem aktif</div></div></header>
+      <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)} aria-label="Buka menu navigasi" aria-controls="app-sidebar" aria-expanded={sidebarOpen}><Menu size={22} /></button><div><p className="topbar-kicker">PT NURUL FAJAR ABINAYA</p><h1>{navItems.find((item) => item.id === view)?.label}</h1></div><div className="topbar-actions"><PwaInstallButton /><div className="topbar-meta"><span className="online-dot" />Sistem aktif</div></div></header>
       {notice && <div className="toast success"><Check size={17} />{notice}</div>}
       {error && <div className="toast error"><CircleAlert size={17} />{error}<button onClick={() => setError("")}><X size={15} /></button></div>}
       <div className="page-content">
