@@ -73,6 +73,7 @@ export type Invoice = {
   total: number;
   paid: number;
   remaining: number;
+  overpayment: number;
   status: string;
 };
 export type Receipt = {
@@ -112,7 +113,7 @@ export type Settings = {
 export type Bank = { id: number; bankName: string; accountNumber: string; accountName: string; isPrimary: boolean };
 export type Dashboard = {
   counts: { all: number; unpaid: number; overdue: number; paid: number };
-  totals: { billed: number; paid: number; remaining: number };
+  totals: { billed: number; paid: number; remaining: number; overpayment: number };
   recent: Invoice[];
 };
 

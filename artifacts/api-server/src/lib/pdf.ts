@@ -62,6 +62,7 @@ type PdfInvoice = {
   total: number;
   paid: number;
   remaining: number;
+  overpayment: number;
   status: string;
   group?: { name: string; departureDate: string; packageName: string } | null;
 };
@@ -86,6 +87,7 @@ type PdfReceipt = {
   total?: number;
   paid?: number;
   remaining?: number;
+  overpayment?: number;
   status?: string;
   departureDate?: string | null;
   groupName?: string | null;
@@ -402,6 +404,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     ["TOTAL INVOICE", money(invoice.total)],
     ["DIBAYAR", money(invoice.paid)],
     ["SISA PEMBAYARAN", money(invoice.remaining)],
+    ["KELEBIHAN PEMBAYARAN", money(invoice.overpayment)],
     ["STATUS", invoice.status],
   ];
   const includeText = nonEmpty(invoice.includeText) || nonEmpty(company.includeText);
@@ -689,7 +692,7 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
     }
   }
   const summaryRows: Array<[string, string]> = receipt.invoiceNumber
-    ? [["TOTAL INVOICE", money(receipt.total)], ["TOTAL DIBAYAR", money(receipt.paid)], ["SISA PEMBAYARAN", money(receipt.remaining)], ["STATUS", receipt.status || "-"]]
+    ? [["TOTAL INVOICE", money(receipt.total)], ["TOTAL DIBAYAR", money(receipt.paid)], ["SISA PEMBAYARAN", money(receipt.remaining)], ["KELEBIHAN PEMBAYARAN", money(receipt.overpayment)], ["STATUS", receipt.status || "-"]]
     : [["STATUS", "KUITANSI MANDIRI"]];
   const summaryHeight = Math.ceil(summaryRows.length / 2) * 16;
   const finalBlocksHeight = 72 + 15 + summaryHeight + 8 + 82 + signatureHeight(true);

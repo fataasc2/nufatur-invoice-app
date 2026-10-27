@@ -9,6 +9,7 @@
     "start": "node --env-file-if-exists=../../.env --enable-source-maps ./dist/index.mjs",
     "bootstrap": "node --env-file-if-exists=../../.env --enable-source-maps ./dist/bootstrap.mjs",
     "db:push": "pnpm --filter @workspace/db run push",
+    "test:invoice-payment": "node --experimental-strip-types --test ./src/lib/invoice-payment-summary.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

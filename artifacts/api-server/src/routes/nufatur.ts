@@ -41,6 +41,7 @@ import {
 } from "../lib/database-backup";
 import { logger } from "../lib/logger";
 import { deleteOperationalExpense, operationalFinanceDeleteAccess } from "../lib/operational-expense-delete";
+import { invoicePaymentSummary } from "../lib/invoice-payment-summary";
 
 const router: IRouter = Router();
 
@@ -63,7 +64,7 @@ function normalizeInvoiceStatus(value: unknown, fallback = "issued"): string {
 function statusFor(invoice: { status: string; dueDate: string; total: number; paid: number }): string {
   if (invoice.status === "draft") return "DRAFT";
   if (invoice.status === "cancelled") return "DIBATALKAN";
-  if (invoice.paid >= invoice.total) return "LUNAS";
+  if (invoicePaymentSummary(invoice.total, invoice.paid).isPaid) return "LUNAS";
   if (invoice.dueDate < todayIso()) return "JATUH TEMPO";
   return "BELUM LUNAS";
 }
@@ -277,8 +278,8 @@ async function invoiceBalanceForClient(client: InvoiceTransactionClient, id: num
   const tax = moneyValue(invoice.tax);
   const total = Math.max(0, invoiceTotalValue(subtotal, discount, cashback, tax));
   const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
-  const remaining = Math.max(0, total - paid);
-  return { ...invoice, items, payments: invoicePayments, subtotal, total, paid, remaining, discount, additionalCost: cashback, tax };
+  const { remaining, overpayment } = invoicePaymentSummary(total, paid);
+  return { ...invoice, items, payments: invoicePayments, subtotal, total, paid, remaining, overpayment, discount, additionalCost: cashback, tax };
 }
 
 function inputItemsSubtotal(items: unknown[]): number {
@@ -304,7 +305,7 @@ async function invoiceRecord(id: number) {
   const tax = moneyValue(invoice.tax);
   const total = Math.max(0, invoiceTotalValue(subtotal, discount, cashback, tax));
   const paid = invoicePayments.reduce((sum, payment) => sum + moneyValue(payment.amount), 0);
-  const remaining = Math.max(0, total - paid);
+  const { remaining, overpayment } = invoicePaymentSummary(total, paid);
   const status = statusFor({ status: invoice.status, dueDate: invoice.dueDate, total, paid });
   return {
     ...invoice,
@@ -314,6 +315,7 @@ async function invoiceRecord(id: number) {
     total,
     paid,
     remaining,
+    overpayment,
     discount,
     discountPercent: subtotal > 0 ? Math.min(100, discount / subtotal * 100) : 0,
     additionalCost: cashback,
@@ -748,6 +750,7 @@ router.get("/dashboard", guard(async (_req, res) => {
   const records = await allInvoiceRecords();
   const total = records.reduce((sum, row) => sum + row.total, 0);
   const paid = records.reduce((sum, row) => sum + row.paid, 0);
+  const overpayment = records.reduce((sum, row) => sum + row.overpayment, 0);
   res.json({
     counts: {
       all: records.length,
@@ -755,7 +758,7 @@ router.get("/dashboard", guard(async (_req, res) => {
       overdue: records.filter((row) => row.status === "JATUH TEMPO").length,
       paid: records.filter((row) => row.status === "LUNAS").length,
     },
-    totals: { billed: total, paid, remaining: Math.max(0, total - paid) },
+    totals: { billed: total, paid, remaining: Math.max(0, total - paid), overpayment },
     recent: records.slice(0, 5),
   });
 }));
@@ -1050,19 +1053,11 @@ router.post("/invoices/:id/payments", guard(async (req, res, userId) => {
     return;
   }
   const amount = moneyValue(body.amount as string | number | null | undefined);
-  const remaining = Math.max(0, invoice.total - invoice.paid);
-  if (amount > remaining) {
-    res.status(400).json({ message: `Pembayaran melebihi sisa tagihan. Maksimal ${moneyValue(remaining)}.` });
-    return;
-  }
   const payment = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM public.invoices WHERE id = ${invoiceId} FOR UPDATE`);
     const currentInvoice = await invoiceBalanceForClient(tx, invoiceId);
     if (!currentInvoice) {
       throw new Error("Invoice tidak ditemukan.");
-    }
-    const currentRemaining = Math.max(0, currentInvoice.total - currentInvoice.paid);
-    if (amount > currentRemaining) {
-      throw new Error("Pembayaran melebihi sisa tagihan.");
     }
     const inserted = (await tx.insert(payments).values({
       invoiceId,
@@ -1277,8 +1272,8 @@ router.get("/export/invoices.csv", guard(async (_req, res) => {
   const records = await allInvoiceRecords();
   const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
   const csv = [
-    ["Nomor Invoice", "Tanggal", "Customer", "Total", "Terbayar", "Sisa", "Status"].map(escape).join(","),
-    ...records.map((row) => [row.number, row.invoiceDate, row.customerName, row.total, row.paid, row.remaining, row.status].map(escape).join(",")),
+    ["Nomor Invoice", "Tanggal", "Customer", "Total", "Terbayar", "Sisa", "Kelebihan Pembayaran", "Status"].map(escape).join(","),
+    ...records.map((row) => [row.number, row.invoiceDate, row.customerName, row.total, row.paid, row.remaining, row.overpayment, row.status].map(escape).join(",")),
   ].join("\n");
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=\"nufatur-invoices.csv\"");
@@ -1329,6 +1324,7 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     total: invoice?.total ?? moneyValue(receipt.amount),
     paid: invoice?.paid ?? moneyValue(receipt.amount),
     remaining: invoice?.remaining ?? 0,
+    overpayment: invoice?.overpayment ?? 0,
     status: invoice?.status ?? "KUITANSI MANDIRI",
     departureDate: invoice?.group?.departureDate,
     groupName: invoice?.group ? `${invoice.group.name} • ${invoice.group.packageName}` : null,
