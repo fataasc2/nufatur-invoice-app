@@ -41,7 +41,7 @@ import {
 } from "../lib/database-backup";
 import { logger } from "../lib/logger";
 import { deleteOperationalExpense, operationalFinanceDeleteAccess } from "../lib/operational-expense-delete";
-import { invoicePaymentSummary } from "../lib/invoice-payment-summary";
+import { invoicePaymentStatusAfterEdit, invoicePaymentSummary } from "../lib/invoice-payment-summary";
 
 const router: IRouter = Router();
 
@@ -1105,28 +1105,48 @@ router.get("/payments", guard(async (req, res) => {
 
 router.post("/payments/:id/receipt", guard(async (req, res, userId) => {
   const paymentId = Number(req.params.id);
-  const payment = (await db.select().from(payments).where(eq(payments.id, paymentId)).limit(1))[0];
-  if (!payment) {
-    res.status(404).json({ message: "Pembayaran tidak ditemukan." });
+  if (!Number.isSafeInteger(paymentId) || paymentId <= 0) {
+    res.status(400).json({ message: "ID pembayaran tidak valid." });
     return;
   }
-  const existing = await receiptForPayment(paymentId);
-  if (existing) {
-    res.json({ receipt: existing });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const hasMethod = Object.prototype.hasOwnProperty.call(body, "method");
+  const method = text(body.method);
+  if (hasMethod && (!method || method.length > 40)) {
+    res.status(400).json({ message: "Metode pembayaran wajib dipilih dan maksimal 40 karakter." });
     return;
   }
-  const invoice = await invoiceRecord(payment.invoiceId);
-  if (!invoice) {
-    res.status(404).json({ message: "Invoice tidak ditemukan." });
+  const receiptDate = body.receiptDate == null || body.receiptDate === "" ? todayIso() : body.receiptDate;
+  if (!validIsoDate(receiptDate)) {
+    res.status(400).json({ message: "Tanggal kuitansi tidak valid." });
     return;
   }
-  const body = req.body ?? {};
-  const receiptDate = text(body.receiptDate, todayIso());
+  if (Object.prototype.hasOwnProperty.call(body, "receivedFrom") &&
+    (typeof body.receivedFrom !== "string" || !text(body.receivedFrom) || text(body.receivedFrom).length > 200)) {
+    res.status(400).json({ message: "Nama penerima pembayaran wajib diisi dan maksimal 200 karakter." });
+    return;
+  }
+  if (body.notes != null && typeof body.notes !== "string") {
+    res.status(400).json({ message: "Keterangan kuitansi tidak valid." });
+    return;
+  }
   try {
     const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM public.payments WHERE id = ${paymentId} FOR UPDATE`);
+      const payment = (await tx.select().from(payments).where(eq(payments.id, paymentId)).limit(1))[0];
+      if (!payment) return { ok: false as const, error: "Pembayaran tidak ditemukan.", status: 404 as const };
+      const invoice = (await tx.select({ customerName: invoices.customerName })
+        .from(invoices).where(eq(invoices.id, payment.invoiceId)).limit(1))[0];
+      if (!invoice) return { ok: false as const, error: "Invoice tidak ditemukan.", status: 404 as const };
+      const nextMethod = hasMethod ? method : payment.method;
+      if (!nextMethod) {
+        return { ok: false as const, error: "Pilih metode pembayaran sebelum membuat kuitansi untuk transaksi ini.", status: 400 as const };
+      }
+      const methodChanged = payment.method !== nextMethod;
+      if (methodChanged) await tx.update(payments).set({ method: nextMethod }).where(eq(payments.id, paymentId));
+      const existing = await tx.select({ id: receipts.id }).from(receipts).where(eq(receipts.paymentId, paymentId)).limit(1);
+      if (existing[0]) return { ok: true as const, id: existing[0].id, created: false, methodChanged };
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${"nufatur-document-number:KWT:" + receiptDate.slice(0, 7)}))`);
-      const alreadyCreated = await tx.select({ id: receipts.id }).from(receipts).where(eq(receipts.paymentId, paymentId)).limit(1);
-      if (alreadyCreated[0]) return { id: alreadyCreated[0].id, created: false };
       const numbers = (await tx.select({ number: receipts.number }).from(receipts)).map((row) => row.number);
       const created = (await tx.insert(receipts).values({
         number: text(body.number, nextDocumentNumber("KWT", numbers, receiptDate)),
@@ -1145,18 +1165,23 @@ router.post("/payments/:id/receipt", guard(async (req, res, userId) => {
         description: payment.description,
         amount: payment.amount,
       });
-      return { id: created.id, created: true };
+      return { ok: true as const, id: created.id, created: true, methodChanged };
     });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.error });
+      return;
+    }
     const receiptWithItems = await receiptForPayment(paymentId);
     if (!receiptWithItems) throw new Error("Kuitansi pembayaran tidak dapat dibaca setelah disimpan.");
-    if (result.created) await audit(userId, "create", "receipt", result.id, { paymentId });
-    res.status(result.created ? 201 : 200).json({ receipt: receiptWithItems });
+    if (result.created) await audit(userId, "create", "receipt", result.id, { paymentId, method });
+    else if (result.methodChanged) await audit(userId, "update", "payment", paymentId, { method });
+    res.status(result.created ? 201 : 200).json({ receipt: receiptWithItems, created: result.created });
   } catch (error) {
     const pgError = error as { code?: string };
     if (pgError.code === "23505") {
       const receipt = await receiptForPayment(paymentId);
       if (receipt) {
-        res.json({ receipt });
+        res.json({ receipt, created: false });
         return;
       }
     }
@@ -1254,9 +1279,22 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
   const hasField = (field: string) => Object.prototype.hasOwnProperty.call(body, field);
-  const editableFields = ["receiptDate", "receivedFrom", "method", "notes"];
+  const editableFields = ["receiptDate", "receivedFrom", "method", "amount", "lineItemAmounts", "notes"];
   if (!editableFields.some(hasField)) {
     res.status(400).json({ message: "Tidak ada perubahan kuitansi yang dikirim." });
+    return;
+  }
+  if (hasField("amount") && hasField("lineItemAmounts")) {
+    res.status(400).json({ message: "Kirim nominal kuitansi atau nominal per rincian, bukan keduanya." });
+    return;
+  }
+  const requestedAmount = hasField("amount") ? positiveMoney(body.amount) : null;
+  if (hasField("amount") && requestedAmount == null) {
+    res.status(400).json({ message: "Nominal pembayaran harus berupa bilangan Rupiah positif yang valid." });
+    return;
+  }
+  if (hasField("lineItemAmounts") && !Array.isArray(body.lineItemAmounts)) {
+    res.status(400).json({ message: "Nominal rincian kuitansi tidak valid." });
     return;
   }
   if (hasField("receiptDate") && !validIsoDate(body.receiptDate)) {
@@ -1276,47 +1314,139 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
     return;
   }
 
-  const existing = await receiptRow(id);
-  if (!existing) {
-    res.status(404).json({ message: "Kuitansi tidak ditemukan." });
-    return;
-  }
-  if (hasField("method") && existing.paymentId == null) {
-    res.status(400).json({ message: "Kuitansi mandiri tidak memiliki metode pembayaran transaksi." });
-    return;
-  }
-
-  const updated = await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT id FROM public.receipts WHERE id = ${id} FOR UPDATE`);
     const current = (await tx.select(receiptColumns).from(receipts).where(eq(receipts.id, id)).limit(1))[0];
-    if (!current) return null;
+    if (!current) return { ok: false as const, error: "Kuitansi tidak ditemukan.", status: 404 as const };
+    if (hasField("method") && current.paymentId == null) {
+      return { ok: false as const, error: "Kuitansi mandiri tidak memiliki metode pembayaran transaksi.", status: 400 as const };
+    }
+
+    const currentItems = await tx.select({
+      id: receiptItems.id,
+      description: receiptItems.description,
+      amount: receiptItems.amount,
+    }).from(receiptItems).where(eq(receiptItems.receiptId, id)).orderBy(receiptItems.position);
+    let updatedAmount: number | null = null;
+    let updatedLineAmounts: number[] | null = null;
+    if (hasField("amount")) {
+      if (current.paymentId == null && currentItems.length > 1) {
+        return { ok: false as const, error: "Ubah nominal setiap rincian kuitansi agar totalnya tetap sesuai.", status: 409 as const };
+      }
+      if (current.paymentId != null && currentItems.length > 1) {
+        return { ok: false as const, error: "Nominal transaksi tidak dapat diubah karena kuitansi memiliki beberapa rincian.", status: 409 as const };
+      }
+      updatedAmount = requestedAmount;
+    }
+    if (hasField("lineItemAmounts")) {
+      if (current.paymentId != null || currentItems.length < 2) {
+        return { ok: false as const, error: "Nominal per rincian hanya berlaku untuk kuitansi mandiri dengan beberapa rincian.", status: 400 as const };
+      }
+      const rawAmounts = body.lineItemAmounts as unknown[];
+      if (rawAmounts.length !== currentItems.length) {
+        return { ok: false as const, error: "Jumlah nominal tidak sesuai dengan jumlah rincian kuitansi.", status: 400 as const };
+      }
+      updatedLineAmounts = [];
+      for (const [index, rawAmount] of rawAmounts.entries()) {
+        const lineAmount = positiveMoney(rawAmount);
+        if (lineAmount == null) {
+          return { ok: false as const, error: `Nominal rincian ${index + 1} harus berupa bilangan Rupiah positif yang valid.`, status: 400 as const };
+        }
+        updatedLineAmounts.push(lineAmount);
+      }
+      updatedAmount = updatedLineAmounts.reduce((sum, amount) => sum + amount, 0);
+      if (!Number.isSafeInteger(updatedAmount) || updatedAmount > 99_999_999_999_999) {
+        return { ok: false as const, error: "Total kuitansi melebihi batas nominal yang didukung.", status: 400 as const };
+      }
+    }
+    if (hasField("method") && current.paymentId != null) {
+      const paymentExists = (await tx.select({ id: payments.id }).from(payments)
+        .where(eq(payments.id, current.paymentId)).limit(1))[0];
+      if (!paymentExists) return { ok: false as const, error: "Pembayaran terkait kuitansi tidak ditemukan.", status: 404 as const };
+    }
 
     const receiptUpdates: Partial<typeof receipts.$inferInsert> = {};
     if (hasField("receiptDate")) receiptUpdates.receiptDate = body.receiptDate as string;
     if (hasField("receivedFrom")) receiptUpdates.receivedFrom = text(body.receivedFrom);
     if (hasField("notes")) receiptUpdates.notes = optionalText(body.notes);
-    if (Object.keys(receiptUpdates).length > 0) {
-      await tx.update(receipts).set(receiptUpdates).where(eq(receipts.id, id));
+
+    if (updatedAmount != null && current.paymentId != null) {
+      await lockOperationalFinance(tx);
+      const paymentLink = (await tx.select({ invoiceId: payments.invoiceId })
+        .from(payments).where(eq(payments.id, current.paymentId)).limit(1))[0];
+      if (!paymentLink) return { ok: false as const, error: "Pembayaran terkait kuitansi tidak ditemukan.", status: 404 as const };
+      await tx.execute(sql`SELECT id FROM public.invoices WHERE id = ${paymentLink.invoiceId} FOR UPDATE`);
+      await tx.execute(sql`SELECT id FROM public.payments WHERE id = ${current.paymentId} FOR UPDATE`);
+      const payment = (await tx.select({
+        id: payments.id,
+        invoiceId: payments.invoiceId,
+      }).from(payments).where(eq(payments.id, current.paymentId)).limit(1))[0];
+      if (!payment) return { ok: false as const, error: "Pembayaran terkait kuitansi tidak ditemukan.", status: 404 as const };
+      const currentInvoice = await invoiceBalanceForClient(tx, payment.invoiceId);
+      if (!currentInvoice) return { ok: false as const, error: "Invoice sumber pembayaran tidak ditemukan.", status: 404 as const };
+
+      const allocations = await tx.select({ amount: operationalExpenseAllocations.amount })
+        .from(operationalExpenseAllocations)
+        .where(and(
+          eq(operationalExpenseAllocations.paymentId, payment.id),
+          eq(operationalExpenseAllocations.isActive, true),
+        ));
+      const allocatedAmount = allocations.reduce((sum, allocation) => sum + moneyValue(allocation.amount), 0);
+      if (updatedAmount < allocatedAmount) {
+        return {
+          ok: false as const,
+          error: `Nominal pembayaran tidak dapat kurang dari dana yang sudah dialokasikan (${allocatedAmount}).`,
+          status: 409 as const,
+        };
+      }
+
+      await tx.update(payments).set({ amount: String(updatedAmount) }).where(eq(payments.id, payment.id));
+      const invoice = await invoiceBalanceForClient(tx, payment.invoiceId);
+      if (!invoice) throw new Error("Invoice sumber pembayaran tidak ditemukan setelah pembaruan pembayaran.");
+      await tx.update(invoices).set({
+        status: invoicePaymentStatusAfterEdit(invoice.status, invoice.total, invoice.paid),
+        updatedAt: new Date(),
+      }).where(eq(invoices.id, payment.invoiceId));
     }
+
+    if (updatedAmount != null) {
+      receiptUpdates.amount = String(updatedAmount);
+      receiptUpdates.words = terbilang(updatedAmount);
+      if (updatedLineAmounts) {
+        for (const [index, lineAmount] of updatedLineAmounts.entries()) {
+          await tx.update(receiptItems).set({ amount: String(lineAmount) }).where(eq(receiptItems.id, currentItems[index].id));
+        }
+      } else if (currentItems[0]) {
+        await tx.update(receiptItems).set({ amount: String(updatedAmount) }).where(eq(receiptItems.id, currentItems[0].id));
+      } else {
+        await tx.insert(receiptItems).values({
+          receiptId: id,
+          position: 0,
+          description: current.purpose,
+          amount: String(updatedAmount),
+        });
+      }
+    }
+    if (Object.keys(receiptUpdates).length > 0) await tx.update(receipts).set(receiptUpdates).where(eq(receipts.id, id));
     if (hasField("method") && current.paymentId != null) {
       const payment = (await tx.update(payments)
         .set({ method: text(body.method) })
         .where(eq(payments.id, current.paymentId))
         .returning({ id: payments.id }))[0];
-      if (!payment) throw new Error("Pembayaran terkait kuitansi tidak ditemukan.");
+      if (!payment) throw new Error("Pembayaran terkait kuitansi hilang saat memperbarui metode.");
     }
-    return current;
+    return { ok: true as const, paymentId: current.paymentId, amount: updatedAmount };
   });
-  if (!updated) {
-    res.status(404).json({ message: "Kuitansi tidak ditemukan." });
+  if (!result.ok) {
+    res.status(result.status).json({ message: result.error });
     return;
   }
-  await audit(userId, "update", "receipt", id, { paymentId: updated.paymentId });
+  await audit(userId, "update", "receipt", id, { paymentId: result.paymentId, amount: result.amount });
   const receipt = await receiptRow(id);
   if (!receipt) throw new Error("Kuitansi tidak dapat dibaca setelah diperbarui.");
-  const payment = updated.paymentId == null
+  const payment = result.paymentId == null
     ? null
-    : (await db.select({ method: payments.method, bank: payments.bank }).from(payments).where(eq(payments.id, updated.paymentId)).limit(1))[0] ?? null;
+    : (await db.select({ method: payments.method, bank: payments.bank }).from(payments).where(eq(payments.id, result.paymentId)).limit(1))[0] ?? null;
   res.json({ receipt: { ...receipt, method: payment?.method ?? null, bank: payment?.bank ?? null } });
 }));
 
