@@ -779,6 +779,7 @@ function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => vo
         method: "POST",
         body: JSON.stringify({
           ...draft,
+          method: draft.method || null,
           lineItems: draft.lineItems.map((item) => ({ ...item, amount: parseMoneyInput(item.amount) })),
         }),
       });
@@ -816,7 +817,7 @@ function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => vo
         ...(editingReceipt.paymentId === null && editingReceipt.lineItems.length > 1
           ? { lineItemAmounts: editDraft.lineItemAmounts.map(parseMoneyInput) }
           : { amount: parseMoneyInput(editDraft.amount) }),
-        ...(editingReceipt.paymentId !== null && editDraft.method.trim() ? { method: editDraft.method.trim() } : {}),
+        ...(editDraft.method.trim() ? { method: editDraft.method.trim() } : {}),
       };
       const result = await api<{ receipt: Receipt }>(`/api/receipts/${editingReceipt.id}`, {
         method: "PATCH",
@@ -845,7 +846,7 @@ function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => vo
       <label>Telah diterima dari<input required maxLength={200} value={draft.receivedFrom} onChange={(event) => setDraft({ ...draft, receivedFrom: event.target.value })} /></label>
       {draft.paymentId
         ? <><div className="payment-summary payment-summary--details"><div><span>Nominal transaksi</span><strong>{money(selectedSourcePayment?.amount ?? 0)}</strong></div></div><label>Metode pembayaran<select required value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}><option value="">Pilih metode pembayaran</option><option value="Transfer">Transfer Bank</option><option value="Cash">Tunai</option><option value="QRIS">QRIS</option><option value="Lainnya">Metode lain</option>{selectedSourcePayment?.method && !["Transfer", "Cash", "QRIS", "Lainnya"].includes(selectedSourcePayment.method) && <option value={selectedSourcePayment.method}>{selectedSourcePayment.method} (tersimpan)</option>}</select></label></>
-        : <section className="receipt-items-editor">
+        : <><label>Metode pembayaran<select value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}><option value="">Tidak dicatat</option><option value="Transfer">Transfer Bank</option><option value="Cash">Tunai</option><option value="QRIS">QRIS</option><option value="Lainnya">Lainnya</option></select></label><section className="receipt-items-editor">
         <div className="section-heading"><h3>Rincian pembayaran</h3><button type="button" className="button small secondary" onClick={() => setDraft({ ...draft, lineItems: [...draft.lineItems, { description: "", amount: "" }] })}><Plus size={14} />Tambah baris</button></div>
         {draft.lineItems.map((item, index) => <div className="receipt-item-row" key={index}>
           <label>Keterangan pembayaran {index + 1}<input required maxLength={1000} value={item.description} onChange={(event) => setDraft({ ...draft, lineItems: draft.lineItems.map((line, lineIndex) => lineIndex === index ? { ...line, description: event.target.value } : line) })} /></label>
@@ -853,7 +854,7 @@ function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => vo
           <button type="button" className="icon-button" aria-label={`Hapus rincian ${index + 1}`} disabled={draft.lineItems.length === 1} onClick={() => setDraft({ ...draft, lineItems: draft.lineItems.filter((_, lineIndex) => lineIndex !== index) })}><Trash2 size={16} /></button>
         </div>)}
         <div className="total-highlight receipt-total"><span>Total kuitansi</span><strong>{money(total)}</strong></div>
-      </section>}
+      </section></>}
       <label>Catatan<textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} rows={2} /></label>
       <div className="modal-actions"><button type="button" className="button ghost" onClick={() => setCreateOpen(false)}>Batal</button><button className="button primary" disabled={busy}>{busy ? "Menyimpan..." : "Simpan kuitansi"}</button></div>
     </form></Modal>}
@@ -874,7 +875,7 @@ function ReceiptsPage({ onNotice, onError }: { onNotice: (message: string) => vo
       {editingReceipt.paymentId !== null || editingReceipt.lineItems.length === 1
         ? <label>Nominal pembayaran<MoneyInput required min="1" value={editDraft.amount} onChange={(amount) => setEditDraft({ ...editDraft, amount })} /><small>{editingReceipt.paymentId !== null ? "Nominal transaksi pembayaran dan saldo invoice akan diperbarui bersama kuitansi." : "Nominal rincian kuitansi akan diperbarui bersama totalnya."}</small></label>
         : <section className="receipt-items-editor"><h3>Nominal rincian pembayaran</h3>{editingReceipt.lineItems.map((item, index) => <label key={`${editingReceipt.id}-amount-${index}`}>{item.description}<MoneyInput required min="1" value={editDraft.lineItemAmounts[index] ?? ""} onChange={(amount) => setEditDraft((current) => ({ ...current, lineItemAmounts: current.lineItemAmounts.map((value, lineIndex) => lineIndex === index ? amount : value) }))} /></label>)}<div className="total-highlight receipt-total"><span>Total kuitansi</span><strong>{money(editDraft.lineItemAmounts.reduce((sum, amount) => sum + parseMoneyInput(amount), 0))}</strong></div><small>Ubah nominal per rincian agar jumlah rincian dan total kuitansi tetap cocok.</small></section>}
-      {editingReceipt.paymentId !== null && <label>Metode pembayaran<select value={editDraft.method} onChange={(event) => setEditDraft({ ...editDraft, method: event.target.value })}><option value="">Tidak dicatat / biarkan tetap</option>{!["Transfer", "Cash", "QRIS", "Lainnya"].includes(editDraft.method) && editDraft.method && <option>{editDraft.method}</option>}<option>Transfer</option><option>Cash</option><option>QRIS</option><option>Lainnya</option></select><small>Metode kosong tidak mengubah data transaksi yang sudah tersimpan.</small></label>}
+      <label>Metode pembayaran<select value={editDraft.method} onChange={(event) => setEditDraft({ ...editDraft, method: event.target.value })}><option value="">Tidak dicatat / biarkan tetap</option>{!["Transfer", "Cash", "QRIS", "Lainnya"].includes(editDraft.method) && editDraft.method && <option value={editDraft.method}>{editDraft.method}</option>}<option value="Transfer">Transfer Bank</option><option value="Cash">Tunai</option><option value="QRIS">QRIS</option><option value="Lainnya">Lainnya</option></select><small>{editingReceipt.paymentId === null ? "Kuitansi mandiri tidak mengubah transaksi atau saldo invoice." : "Metode kosong tidak mengubah data transaksi yang sudah tersimpan."}</small></label>
       <label>Keterangan<textarea value={editDraft.notes} onChange={(event) => setEditDraft({ ...editDraft, notes: event.target.value })} rows={3} /></label>
       <div className="modal-actions"><button type="button" className="button ghost" onClick={() => setEditingReceipt(null)}>Batal</button><button className="button primary" disabled={editBusy}>{editBusy ? "Menyimpan..." : "Simpan perubahan"}</button></div>
     </form></Modal>}

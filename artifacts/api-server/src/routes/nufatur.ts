@@ -149,6 +149,7 @@ const receiptColumns = {
   amount: receipts.amount,
   words: receipts.words,
   purpose: receipts.purpose,
+  method: receipts.method,
   notes: receipts.notes,
   createdAt: receipts.createdAt,
 };
@@ -1193,6 +1194,11 @@ router.post("/receipts", guard(async (req, res, userId) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const receiptDate = body.receiptDate == null || body.receiptDate === "" ? todayIso() : body.receiptDate;
   const receivedFrom = text(body.receivedFrom);
+  if (body.method != null && body.method !== "" && typeof body.method !== "string") {
+    res.status(400).json({ message: "Metode pembayaran tidak valid." });
+    return;
+  }
+  const method = optionalText(body.method);
   const notes = optionalText(body.notes);
   const rawItems = body.lineItems;
 
@@ -1202,6 +1208,10 @@ router.post("/receipts", guard(async (req, res, userId) => {
   }
   if (!receivedFrom || receivedFrom.length > 200) {
     res.status(400).json({ message: "Nama penerima pembayaran wajib diisi dan maksimal 200 karakter." });
+    return;
+  }
+  if (method && method.length > 40) {
+    res.status(400).json({ message: "Metode pembayaran maksimal 40 karakter." });
     return;
   }
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
@@ -1247,6 +1257,7 @@ router.post("/receipts", guard(async (req, res, userId) => {
       amount: String(amount),
       words: terbilang(amount),
       purpose,
+      method,
       notes,
     }).returning(receiptColumns))[0];
     if (!created) throw new Error("Penyimpanan kuitansi mandiri tidak menghasilkan catatan.");
@@ -1318,10 +1329,6 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
     await tx.execute(sql`SELECT id FROM public.receipts WHERE id = ${id} FOR UPDATE`);
     const current = (await tx.select(receiptColumns).from(receipts).where(eq(receipts.id, id)).limit(1))[0];
     if (!current) return { ok: false as const, error: "Kuitansi tidak ditemukan.", status: 404 as const };
-    if (hasField("method") && current.paymentId == null) {
-      return { ok: false as const, error: "Kuitansi mandiri tidak memiliki metode pembayaran transaksi.", status: 400 as const };
-    }
-
     const currentItems = await tx.select({
       id: receiptItems.id,
       description: receiptItems.description,
@@ -1368,6 +1375,7 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
     const receiptUpdates: Partial<typeof receipts.$inferInsert> = {};
     if (hasField("receiptDate")) receiptUpdates.receiptDate = body.receiptDate as string;
     if (hasField("receivedFrom")) receiptUpdates.receivedFrom = text(body.receivedFrom);
+    if (hasField("method") && current.paymentId == null) receiptUpdates.method = text(body.method);
     if (hasField("notes")) receiptUpdates.notes = optionalText(body.notes);
 
     if (updatedAmount != null && current.paymentId != null) {
@@ -1447,7 +1455,13 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
   const payment = result.paymentId == null
     ? null
     : (await db.select({ method: payments.method, bank: payments.bank }).from(payments).where(eq(payments.id, result.paymentId)).limit(1))[0] ?? null;
-  res.json({ receipt: { ...receipt, method: payment?.method ?? null, bank: payment?.bank ?? null } });
+  res.json({
+    receipt: {
+      ...receipt,
+      method: payment?.method ?? receipt.method ?? null,
+      bank: payment?.bank ?? null,
+    },
+  });
 }));
 
 router.get("/receipts", guard(async (_req, res) => {
@@ -1476,7 +1490,7 @@ router.get("/receipts", guard(async (_req, res) => {
       return {
         ...receipt,
         lineItems: lineItemsByReceipt.get(receipt.id) ?? [{ description: receipt.purpose, amount: receipt.amount }],
-        method: receipt.paymentId == null ? null : paymentMap.get(receipt.paymentId)?.method ?? null,
+        method: receipt.paymentId == null ? receipt.method ?? null : paymentMap.get(receipt.paymentId)?.method ?? null,
         bank: receipt.paymentId == null ? null : paymentMap.get(receipt.paymentId)?.bank ?? null,
         includeText: "",
         invoice: invoice ?? null,
@@ -1532,7 +1546,7 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     ...receipt,
     lineItems: receipt.lineItems,
     invoiceNumber: invoice?.number ?? null,
-    method: payment?.method ?? null,
+    method: payment?.method ?? receipt.method ?? null,
     bank: payment?.bank ?? null,
     includeText: receipt.includeText || invoice?.includeText || company.includeText,
     subtotal: invoice?.subtotal ?? moneyValue(receipt.amount),

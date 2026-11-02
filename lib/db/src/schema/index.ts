@@ -134,6 +134,7 @@ export const receipts = pgTable("receipts", {
   amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),
   words: text("words").notNull(),
   purpose: text("purpose").notNull(),
+  method: varchar("method", { length: 40 }),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

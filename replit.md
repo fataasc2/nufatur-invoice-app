@@ -39,7 +39,7 @@ Aplikasi internal NUFATUR untuk mengelola invoice, pembayaran, kuitansi, dan PDF
 
 ## Product
 
-Login internal, dashboard ringkas, CRUD invoice dengan item dinamis, status otomatis, payment history dengan metode per transaksi, kuitansi yang dapat diedit tanpa mengubah nominal pembayaran, PDF A4, export CSV, pengaturan identitas/rekening/template, dan PWA responsive.
+Login internal, dashboard ringkas, CRUD invoice dengan item dinamis, status otomatis, payment history dengan metode per transaksi, kuitansi mandiri dan kuitansi pembayaran dengan metode pembayaran yang tersimpan, edit kuitansi, PDF A4, export CSV, pengaturan identitas/rekening/template, dan PWA responsive.
 
 ## User preferences
 
