@@ -42,6 +42,7 @@ import {
 import { logger } from "../lib/logger";
 import { deleteOperationalExpense, operationalFinanceDeleteAccess } from "../lib/operational-expense-delete";
 import { invoicePaymentStatusAfterEdit, invoicePaymentSummary } from "../lib/invoice-payment-summary";
+import { validateStandaloneReceiptBank } from "../lib/standalone-receipt-bank";
 
 const router: IRouter = Router();
 
@@ -150,6 +151,7 @@ const receiptColumns = {
   words: receipts.words,
   purpose: receipts.purpose,
   method: receipts.method,
+  bank: receipts.bank,
   notes: receipts.notes,
   createdAt: receipts.createdAt,
 };
@@ -268,7 +270,7 @@ async function receiptForPayment(paymentId: number) {
     ...row,
     lineItems: items.length > 0 ? items : [{ description: row.purpose, amount: row.amount }],
     method: payment?.method ?? null,
-    bank: payment?.bank ?? null,
+    bank: payment?.method === "Transfer" ? payment.bank ?? null : null,
     includeText: "",
   };
 }
@@ -1199,6 +1201,11 @@ router.post("/receipts", guard(async (req, res, userId) => {
     return;
   }
   const method = optionalText(body.method);
+  const bankValidation = validateStandaloneReceiptBank(method, body.bank);
+  if (!bankValidation.valid) {
+    res.status(400).json({ message: bankValidation.message });
+    return;
+  }
   const notes = optionalText(body.notes);
   const rawItems = body.lineItems;
 
@@ -1258,6 +1265,7 @@ router.post("/receipts", guard(async (req, res, userId) => {
       words: terbilang(amount),
       purpose,
       method,
+      bank: bankValidation.bank,
       notes,
     }).returning(receiptColumns))[0];
     if (!created) throw new Error("Penyimpanan kuitansi mandiri tidak menghasilkan catatan.");
@@ -1290,7 +1298,7 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
   const hasField = (field: string) => Object.prototype.hasOwnProperty.call(body, field);
-  const editableFields = ["receiptDate", "receivedFrom", "method", "amount", "lineItemAmounts", "notes"];
+  const editableFields = ["receiptDate", "receivedFrom", "method", "bank", "amount", "lineItemAmounts", "notes"];
   if (!editableFields.some(hasField)) {
     res.status(400).json({ message: "Tidak ada perubahan kuitansi yang dikirim." });
     return;
@@ -1320,6 +1328,14 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
     res.status(400).json({ message: "Metode pembayaran wajib dipilih dan maksimal 40 karakter." });
     return;
   }
+  if (hasField("bank") && body.bank != null && typeof body.bank !== "string") {
+    res.status(400).json({ message: "Nama bank tidak valid." });
+    return;
+  }
+  if (hasField("bank") && typeof body.bank === "string" && body.bank.trim().length > 120) {
+    res.status(400).json({ message: "Nama bank maksimal 120 karakter." });
+    return;
+  }
   if (hasField("notes") && body.notes != null && typeof body.notes !== "string") {
     res.status(400).json({ message: "Keterangan kuitansi tidak valid." });
     return;
@@ -1329,6 +1345,23 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
     await tx.execute(sql`SELECT id FROM public.receipts WHERE id = ${id} FOR UPDATE`);
     const current = (await tx.select(receiptColumns).from(receipts).where(eq(receipts.id, id)).limit(1))[0];
     if (!current) return { ok: false as const, error: "Kuitansi tidak ditemukan.", status: 404 as const };
+    if (hasField("bank") && current.paymentId != null) {
+      return { ok: false as const, error: "Nama bank kuitansi transaksi dikelola melalui data pembayaran.", status: 409 as const };
+    }
+    let updatedStandaloneBank: string | null = current.bank ?? null;
+    if (current.paymentId == null && (hasField("method") || hasField("bank"))) {
+      const nextMethod = hasField("method") ? text(body.method) : current.method ?? null;
+      const nextBank = hasField("bank")
+        ? body.bank
+        : hasField("method") && nextMethod !== "Transfer"
+          ? null
+          : current.bank;
+      const bankValidation = validateStandaloneReceiptBank(nextMethod, nextBank);
+      if (!bankValidation.valid) {
+        return { ok: false as const, error: bankValidation.message, status: 400 as const };
+      }
+      updatedStandaloneBank = bankValidation.bank;
+    }
     const currentItems = await tx.select({
       id: receiptItems.id,
       description: receiptItems.description,
@@ -1376,6 +1409,7 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
     if (hasField("receiptDate")) receiptUpdates.receiptDate = body.receiptDate as string;
     if (hasField("receivedFrom")) receiptUpdates.receivedFrom = text(body.receivedFrom);
     if (hasField("method") && current.paymentId == null) receiptUpdates.method = text(body.method);
+    if (current.paymentId == null && (hasField("method") || hasField("bank"))) receiptUpdates.bank = updatedStandaloneBank;
     if (hasField("notes")) receiptUpdates.notes = optionalText(body.notes);
 
     if (updatedAmount != null && current.paymentId != null) {
@@ -1455,11 +1489,12 @@ router.patch("/receipts/:id", guard(async (req, res, userId) => {
   const payment = result.paymentId == null
     ? null
     : (await db.select({ method: payments.method, bank: payments.bank }).from(payments).where(eq(payments.id, result.paymentId)).limit(1))[0] ?? null;
+  const method = payment?.method ?? receipt.method ?? null;
   res.json({
     receipt: {
       ...receipt,
-      method: payment?.method ?? receipt.method ?? null,
-      bank: payment?.bank ?? null,
+      method,
+      bank: method === "Transfer" ? payment?.bank ?? receipt.bank ?? null : null,
     },
   });
 }));
@@ -1487,11 +1522,14 @@ router.get("/receipts", guard(async (_req, res) => {
       const invoice = receipt.paymentId == null
         ? undefined
         : invoiceMap.get(paymentMap.get(receipt.paymentId)?.invoiceId ?? -1);
+      const method = receipt.paymentId == null ? receipt.method ?? null : paymentMap.get(receipt.paymentId)?.method ?? null;
       return {
         ...receipt,
         lineItems: lineItemsByReceipt.get(receipt.id) ?? [{ description: receipt.purpose, amount: receipt.amount }],
-        method: receipt.paymentId == null ? receipt.method ?? null : paymentMap.get(receipt.paymentId)?.method ?? null,
-        bank: receipt.paymentId == null ? null : paymentMap.get(receipt.paymentId)?.bank ?? null,
+        method,
+        bank: method === "Transfer"
+          ? receipt.paymentId == null ? receipt.bank ?? null : paymentMap.get(receipt.paymentId)?.bank ?? null
+          : null,
         includeText: "",
         invoice: invoice ?? null,
         group: invoice?.groupId ? groupMap.get(invoice.groupId) ?? null : null,
@@ -1547,7 +1585,7 @@ router.get("/receipts/:id/pdf", guard(async (req, res) => {
     lineItems: receipt.lineItems,
     invoiceNumber: invoice?.number ?? null,
     method: payment?.method ?? receipt.method ?? null,
-    bank: payment?.bank ?? null,
+    bank: (payment?.method ?? receipt.method) === "Transfer" ? payment?.bank ?? receipt.bank ?? null : null,
     includeText: receipt.includeText || invoice?.includeText || company.includeText,
     subtotal: invoice?.subtotal ?? moneyValue(receipt.amount),
     discount: invoice?.discount ?? 0,

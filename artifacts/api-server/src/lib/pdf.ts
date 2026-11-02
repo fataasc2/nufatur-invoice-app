@@ -624,7 +624,7 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
     ["GROUP / PAKET", receipt.groupName || "-"],
     ["KEBERANGKATAN", formatDepartureDate(receipt.departureDate) || "-"],
     ["INVOICE", receipt.invoiceNumber || "Kuitansi mandiri"],
-    ["METODE PEMBAYARAN", `${receipt.method || "Tidak dicatat"}${receipt.bank ? ` • ${receipt.bank}` : ""}`],
+    ["METODE PEMBAYARAN", `${receipt.method === "Transfer" ? "Transfer Bank" : receipt.method === "Cash" ? "Tunai" : receipt.method || "Tidak dicatat"}${receipt.method === "Transfer" && receipt.bank ? ` — ${receipt.bank}` : ""}`],
   ];
   receiptRows.forEach(([label, value], index) => {
     const y = 218 + index * 25;

@@ -135,6 +135,7 @@ export const receipts = pgTable("receipts", {
   words: text("words").notNull(),
   purpose: text("purpose").notNull(),
   method: varchar("method", { length: 40 }),
+  bank: varchar("bank", { length: 120 }),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
