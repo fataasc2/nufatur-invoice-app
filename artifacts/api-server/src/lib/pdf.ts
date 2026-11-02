@@ -54,7 +54,7 @@ type PdfInvoice = {
   notes?: string | null;
   includeText?: string | null;
   items: Array<{ description: string; flight?: string | null; details?: string | null; itemDate?: string | null; quantity?: string | null; price?: string | null; amount: string; cashback?: string | number | null }>;
-  payments: Array<{ paymentDate: string; description: string; amount: string; bank?: string | null; method: string }>;
+  payments: Array<{ paymentDate: string; description: string; amount: string; bank?: string | null; method: string | null }>;
   subtotal: number;
   discount: number;
   additionalCost: number;
@@ -520,7 +520,7 @@ export function streamInvoicePdf(res: Response, company: PdfCompany, invoice: Pd
     invoice.payments.forEach((payment, index) => {
       doc.font("Helvetica").fontSize(7.5);
       const descriptionHeight = doc.heightOfString(payment.description || "-", { width: 230, lineGap: 1 });
-      const method = payment.bank ?? payment.method;
+      const method = payment.bank ?? payment.method ?? "Tidak dicatat";
       const methodHeight = doc.heightOfString(method, { width: 82, lineGap: 1 });
       const rowHeight = Math.max(18, descriptionHeight + 6, methodHeight + 6);
       if (y + rowHeight > INVOICE_CONTENT_BOTTOM) {
@@ -624,7 +624,7 @@ export function streamReceiptPdf(res: Response, company: PdfCompany, receipt: Pd
     ["GROUP / PAKET", receipt.groupName || "-"],
     ["KEBERANGKATAN", formatDepartureDate(receipt.departureDate) || "-"],
     ["INVOICE", receipt.invoiceNumber || "Kuitansi mandiri"],
-    ["METODE PEMBAYARAN", `${receipt.method || "-"}${receipt.bank ? ` • ${receipt.bank}` : ""}`],
+    ["METODE PEMBAYARAN", `${receipt.method || "Tidak dicatat"}${receipt.bank ? ` • ${receipt.bank}` : ""}`],
   ];
   receiptRows.forEach(([label, value], index) => {
     const y = 218 + index * 25;

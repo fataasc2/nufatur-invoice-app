@@ -17,7 +17,7 @@ export type Payment = {
   description: string;
   amount: string;
   bank?: string | null;
-  method: string;
+  method: string | null;
   notes?: string | null;
   invoice?: { id: number; number: string; customerName: string };
 };
@@ -86,6 +86,8 @@ export type Receipt = {
   words: string;
   purpose: string;
   lineItems: Array<{ description: string; amount: string }>;
+  method?: string | null;
+  bank?: string | null;
   notes?: string | null;
   includeText: string;
   invoice?: { id: number; number: string } | null;

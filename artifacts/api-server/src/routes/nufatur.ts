@@ -262,7 +262,14 @@ async function receiptForPayment(paymentId: number) {
   if (!row) return null;
   const items = await db.select({ description: receiptItems.description, amount: receiptItems.amount })
     .from(receiptItems).where(eq(receiptItems.receiptId, row.id)).orderBy(receiptItems.position);
-  return { ...row, lineItems: items.length > 0 ? items : [{ description: row.purpose, amount: row.amount }], includeText: "" };
+  const payment = (await db.select({ method: payments.method, bank: payments.bank }).from(payments).where(eq(payments.id, paymentId)).limit(1))[0];
+  return {
+    ...row,
+    lineItems: items.length > 0 ? items : [{ description: row.purpose, amount: row.amount }],
+    method: payment?.method ?? null,
+    bank: payment?.bank ?? null,
+    includeText: "",
+  };
 }
 
 type InvoiceTransactionClient = Pick<typeof db, "select">;
@@ -1052,6 +1059,11 @@ router.post("/invoices/:id/payments", guard(async (req, res, userId) => {
     res.status(400).json({ message: "Nominal pembayaran harus lebih dari 0." });
     return;
   }
+  const method = text(body.method);
+  if (!method || method.length > 40) {
+    res.status(400).json({ message: "Metode pembayaran wajib dipilih dan maksimal 40 karakter." });
+    return;
+  }
   const amount = moneyValue(body.amount as string | number | null | undefined);
   const payment = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT id FROM public.invoices WHERE id = ${invoiceId} FOR UPDATE`);
@@ -1065,7 +1077,7 @@ router.post("/invoices/:id/payments", guard(async (req, res, userId) => {
       description: text(body.description, "Pembayaran"),
       amount: String(amount),
       bank: optionalText(body.bank),
-      method: text(body.method, "Transfer"),
+      method,
       notes: optionalText(body.notes),
     }).returning())[0];
     const nextPaid = currentInvoice.paid + amount;
@@ -1234,6 +1246,80 @@ router.post("/receipts", guard(async (req, res, userId) => {
   res.status(201).json({ receipt });
 }));
 
+router.patch("/receipts/:id", guard(async (req, res, userId) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ message: "ID kuitansi tidak valid." });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const hasField = (field: string) => Object.prototype.hasOwnProperty.call(body, field);
+  const editableFields = ["receiptDate", "receivedFrom", "method", "notes"];
+  if (!editableFields.some(hasField)) {
+    res.status(400).json({ message: "Tidak ada perubahan kuitansi yang dikirim." });
+    return;
+  }
+  if (hasField("receiptDate") && !validIsoDate(body.receiptDate)) {
+    res.status(400).json({ message: "Tanggal kuitansi tidak valid." });
+    return;
+  }
+  if (hasField("receivedFrom") && (typeof body.receivedFrom !== "string" || !text(body.receivedFrom) || text(body.receivedFrom).length > 200)) {
+    res.status(400).json({ message: "Nama penerima pembayaran wajib diisi dan maksimal 200 karakter." });
+    return;
+  }
+  if (hasField("method") && (typeof body.method !== "string" || !text(body.method) || text(body.method).length > 40)) {
+    res.status(400).json({ message: "Metode pembayaran wajib dipilih dan maksimal 40 karakter." });
+    return;
+  }
+  if (hasField("notes") && body.notes != null && typeof body.notes !== "string") {
+    res.status(400).json({ message: "Keterangan kuitansi tidak valid." });
+    return;
+  }
+
+  const existing = await receiptRow(id);
+  if (!existing) {
+    res.status(404).json({ message: "Kuitansi tidak ditemukan." });
+    return;
+  }
+  if (hasField("method") && existing.paymentId == null) {
+    res.status(400).json({ message: "Kuitansi mandiri tidak memiliki metode pembayaran transaksi." });
+    return;
+  }
+
+  const updated = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM public.receipts WHERE id = ${id} FOR UPDATE`);
+    const current = (await tx.select(receiptColumns).from(receipts).where(eq(receipts.id, id)).limit(1))[0];
+    if (!current) return null;
+
+    const receiptUpdates: Partial<typeof receipts.$inferInsert> = {};
+    if (hasField("receiptDate")) receiptUpdates.receiptDate = body.receiptDate as string;
+    if (hasField("receivedFrom")) receiptUpdates.receivedFrom = text(body.receivedFrom);
+    if (hasField("notes")) receiptUpdates.notes = optionalText(body.notes);
+    if (Object.keys(receiptUpdates).length > 0) {
+      await tx.update(receipts).set(receiptUpdates).where(eq(receipts.id, id));
+    }
+    if (hasField("method") && current.paymentId != null) {
+      const payment = (await tx.update(payments)
+        .set({ method: text(body.method) })
+        .where(eq(payments.id, current.paymentId))
+        .returning({ id: payments.id }))[0];
+      if (!payment) throw new Error("Pembayaran terkait kuitansi tidak ditemukan.");
+    }
+    return current;
+  });
+  if (!updated) {
+    res.status(404).json({ message: "Kuitansi tidak ditemukan." });
+    return;
+  }
+  await audit(userId, "update", "receipt", id, { paymentId: updated.paymentId });
+  const receipt = await receiptRow(id);
+  if (!receipt) throw new Error("Kuitansi tidak dapat dibaca setelah diperbarui.");
+  const payment = updated.paymentId == null
+    ? null
+    : (await db.select({ method: payments.method, bank: payments.bank }).from(payments).where(eq(payments.id, updated.paymentId)).limit(1))[0] ?? null;
+  res.json({ receipt: { ...receipt, method: payment?.method ?? null, bank: payment?.bank ?? null } });
+}));
+
 router.get("/receipts", guard(async (_req, res) => {
   const rows = await db.select(receiptColumns).from(receipts).orderBy(desc(receipts.receiptDate));
   const lineItemRows = rows.length > 0
@@ -1246,7 +1332,7 @@ router.get("/receipts", guard(async (_req, res) => {
     items.push({ description: item.description, amount: item.amount });
     lineItemsByReceipt.set(item.receiptId, items);
   }
-  const paymentRows = await db.select({ id: payments.id, invoiceId: payments.invoiceId }).from(payments);
+  const paymentRows = await db.select({ id: payments.id, invoiceId: payments.invoiceId, method: payments.method, bank: payments.bank }).from(payments);
   const invoiceRows = await db.select({ id: invoices.id, number: invoices.number, groupId: invoices.groupId }).from(invoices);
   const groupRows = await db.select(groupColumns).from(departureGroups);
   const paymentMap = new Map(paymentRows.map((payment) => [payment.id, payment]));
@@ -1260,6 +1346,8 @@ router.get("/receipts", guard(async (_req, res) => {
       return {
         ...receipt,
         lineItems: lineItemsByReceipt.get(receipt.id) ?? [{ description: receipt.purpose, amount: receipt.amount }],
+        method: receipt.paymentId == null ? null : paymentMap.get(receipt.paymentId)?.method ?? null,
+        bank: receipt.paymentId == null ? null : paymentMap.get(receipt.paymentId)?.bank ?? null,
         includeText: "",
         invoice: invoice ?? null,
         group: invoice?.groupId ? groupMap.get(invoice.groupId) ?? null : null,

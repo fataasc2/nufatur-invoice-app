@@ -120,7 +120,7 @@ export const payments = pgTable("payments", {
   description: text("description").notNull(),
   amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),
   bank: varchar("bank", { length: 120 }),
-  method: varchar("method", { length: 40 }).notNull().default("Transfer"),
+  method: varchar("method", { length: 40 }),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

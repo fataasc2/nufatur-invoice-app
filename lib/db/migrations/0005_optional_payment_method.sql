@@ -1,0 +1,7 @@
+BEGIN;
+
+ALTER TABLE public.payments
+  ALTER COLUMN method DROP DEFAULT,
+  ALTER COLUMN method DROP NOT NULL;
+
+COMMIT;
